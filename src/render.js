@@ -4,7 +4,7 @@ const { DisplayFile, FieldInfo } = require(`./dspf`);
 const colors = {
   RED: `red`,
   BLU: `#4287f5`,
-  WHT: `white`,
+  WHT: `#FFFFFF`,
   GRN: `green`,
   TRQ: `turquoise`,
   YLW: `yellow`,
@@ -31,6 +31,7 @@ module.exports = class Render {
       `  position: absolute;`,
       `  --g: transparent calc(100% - 1px), #ebebeb 0;`,
       `  letter-spacing: 0.15px;`,
+      `  color: ${colors.GRN};`,
       `  background:`,
       // `    linear-gradient(to right, var(--g)),`,
       // `    linear-gradient(to bottom, var(--g)), `,
@@ -177,7 +178,7 @@ module.exports = class Render {
               css += `text-decoration: underline;`;
               break;
             case `HI`:
-              css += `font-weight: bold;`;
+              css += `font-weight: 900;`;
               break;
             case `BL`:
               css += `animation: blinker 1s step-start infinite;`;
