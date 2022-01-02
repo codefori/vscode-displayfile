@@ -8,7 +8,7 @@ class DisplayFile {
     this.currentField = null;
     
     /** @type {FieldInfo[]} */
-    this.currentFields = null;
+    this.currentFields = [];
     
     /** @type {RecordInfo} */
     this.currentRecord = new RecordInfo(`GLOBAL`);
@@ -24,6 +24,8 @@ class DisplayFile {
     
     lines.forEach(line => {
       line = line.padEnd(80);
+
+      if (line[6] === `*`) return;
       
       name = line.substring(18, 28).trim();
       len = line.substring(29, 34).trim();
@@ -102,7 +104,6 @@ class DisplayFile {
         }
         else
         {
-          this.HandleKeywords(keywords);
           if (this.currentField != null)
           {
             if (this.currentField.name == null)
@@ -114,6 +115,7 @@ class DisplayFile {
               this.currentField.displayType = `const`;
             }
           }
+          this.HandleKeywords(keywords);
         }
         break;
       }
@@ -133,9 +135,13 @@ class DisplayFile {
   * @returns 
   */
   HandleKeywords(keywords) {
-    if (keywords.endsWith("'") && keywords.endsWith("'"))
+    if (keywords.startsWith(`'`) || keywords.endsWith(`'`) || keywords.endsWith(`-`))
     {
-      this.currentField.value = keywords.substring(1, keywords.length - 1);
+      if (keywords.startsWith(`'`)) keywords = keywords.substring(1);
+      if (keywords.endsWith(`'`) || keywords.endsWith(`-`)) 
+        keywords = keywords.substring(0, keywords.length - 1);
+
+      this.currentField.value += keywords;
       return;
     }
     if (keywords.includes("(") && keywords.includes(")")) {

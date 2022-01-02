@@ -139,12 +139,15 @@ module.exports = class Render {
    */
   static getContent(field) {
     if (field.displayType !== `hidden`) {
-      let body = `<div id="${field.name}">${field.value.padEnd(field.length, `-`)}</div>`
+      const length = field.length > 0 ? field.length : field.value.length;
+      const value = field.value.replace(/ /g,"&nbsp;")
+
+      let body = `<div id="${field.name}">${value.padEnd(length, `-`)}</div>`
       let css = `#${field.name} {`;
 
       css += [
         `position: absolute`,
-        `width: ${field.length * 11}px`,
+        `width: ${length * 11}px`,
         `height: 19px`,
         `top: ${field.position.y * 20}px`,
         `left: ${field.position.x * 11}px`,
