@@ -189,7 +189,9 @@ module.exports = class Render {
       });
 
       const length = field.length > 0 ? field.length : field.value.length;
-      const value = field.value; //field.value.replace(/ /g," ")
+      const value = field.value
+        .replace(/ /g, `&nbsp;`)
+        .replace(new RegExp(`''`, `g`), `'`);
 
       let body = `<div id="${name}">${value.padEnd(length, `-`)}</div>`
 
