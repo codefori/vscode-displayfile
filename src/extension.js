@@ -38,7 +38,7 @@ function activate(context) {
 
         const panel = vscode.window.createWebviewPanel(
           `displayFile`,
-          format,
+          format || `Preview`,
           vscode.ViewColumn.Active
         );
     
