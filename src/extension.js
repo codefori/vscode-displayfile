@@ -4,7 +4,8 @@ const vscode = require('vscode');
 
 const lensProvider = require(`./lensProvider`);
 
-const DisplayFile = require(`./dspf`);
+const { DisplayFile } = require(`./dspf`);
+const Render = require(`./render`);
 
 // this method is called when your extension is activated
 // your extension is activated the very first time the command is executed
@@ -31,7 +32,17 @@ function activate(context) {
         const dspf = new DisplayFile();
         dspf.parse(sourceLines);
 
-        console.log(dspf);
+        const render = new Render(dspf);
+
+        const html = render.getHTML(format);
+
+        const panel = vscode.window.createWebviewPanel(
+          `displayFile`,
+          format,
+          vscode.ViewColumn.Active
+        );
+    
+        panel.webview.html = html;
 
       } catch (e) {
         console.log(e);

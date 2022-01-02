@@ -1,5 +1,5 @@
 
-module.exports = class DisplayFile { 
+class DisplayFile { 
   constructor() {
     /** @type {RecordInfo[]} */
     this.formats = [];
@@ -122,6 +122,10 @@ module.exports = class DisplayFile {
     if (this.currentField !== null) this.currentFields.push(this.currentField);
     if (this.currentFields !== null) this.currentRecord.fields = this.currentFields;
     if (this.currentRecord !== null) this.formats.push(this.currentRecord);
+
+    this.currentField = null;
+    this.currentFields = null;
+    this.currentRecord = null;
   }
   
   /**
@@ -154,12 +158,18 @@ module.exports = class DisplayFile {
           break;
 
         default:
-          this.currentRecord.keywords[option.toUpperCase()] = value;
+          this.currentRecord.keywords.push({
+            name: option.toUpperCase(),
+            value
+          })
           break;
         }
 
       } else {
-        this.currentField.keywords[option.toUpperCase()] = value;
+        this.currentField.keywords.push({
+          name: option.toUpperCase(),
+          value
+        });
       }
     }
   }
@@ -178,15 +188,17 @@ class RecordInfo {
       height: 24
     };
 
-    /** @type {{[name: string]: string}} */
-    this.keywords = {};
+    /** @type {{name: string, value: string}[]} */
+    this.keywords = [];
   }
 }
 
 class FieldInfo {
   constructor(name) {
     this.name = name;
-    this.value = null;
+
+    /** @type {string} */
+    this.value = ``;
     
     /** @type {`char`|`decimal`} */
     this.type = null;
@@ -202,7 +214,13 @@ class FieldInfo {
       y: 0
     };
 
-    /** @type {{[name: string]: string}} */
-    this.keywords = {};
+    /** @type {{name: string, value: string}[]} */
+    this.keywords = [];
   }
+}
+
+module.exports = {
+  DisplayFile,
+  FieldInfo,
+  RecordInfo
 }
