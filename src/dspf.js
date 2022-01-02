@@ -69,38 +69,41 @@ class DisplayFile {
         
         if (name != "")
         {
-          this.currentField.name = name;
-          this.currentField.value = "";
-          this.currentField.length = Number(len);
-          switch (inout)
-          {
-          case "I":
-            this.currentField.displayType = `input`;
-            break;
-          case "B":
-            this.currentField.displayType = `both`;
-            break;
-          case "H":
-            this.currentField.displayType = `hidden`;
-            break;
-          case " ":
-          case "O":
-            this.currentField.displayType = `output`;
-            break;
+          if (this.currentField) {
+            this.currentField.name = name;
+            this.currentField.value = "";
+            this.currentField.length = Number(len);
+            switch (inout)
+            {
+            case "I":
+              this.currentField.displayType = `input`;
+              break;
+            case "B":
+              this.currentField.displayType = `both`;
+              break;
+            case "H":
+              this.currentField.displayType = `hidden`;
+              break;
+            case " ":
+            case "O":
+              this.currentField.displayType = `output`;
+              break;
+            }
+            
+            this.currentField.decimals = 0;
+            switch (type)
+            {
+            case "D":
+              this.currentField.type = `decimal`;
+              if (dec != "") this.currentField.decimals = Number(dec);
+              break;
+            default:
+              this.currentField.type = `char`;
+              break;
+            }
+            
+            this.HandleKeywords(keywords);
           }
-          
-          this.currentField.decimals = 0;
-          switch (type)
-          {
-          case "D":
-            this.currentField.type = `decimal`;
-            if (dec != "") this.currentField.decimals = Number(dec);
-            break;
-          default:
-            this.currentField.type = `char`;
-            break;
-          }
-          this.HandleKeywords(keywords);
         }
         else
         {
