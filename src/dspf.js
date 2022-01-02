@@ -38,9 +38,15 @@ class DisplayFile {
       
       switch (line[16]) {
       case 'R':
-        if (this.currentField !== null) this.currentFields.push(this.currentField);
+        if (this.currentField !== null) {
+          this.currentField.handleKeywords();
+          this.currentFields.push(this.currentField);
+        };
         if (this.currentFields !== null) this.currentRecord.fields = this.currentFields;
-        if (this.currentRecord !== null) this.formats.push(this.currentRecord);
+        if (this.currentRecord !== null) {
+          this.currentRecord.handleKeywords();
+          this.formats.push(this.currentRecord);
+        }
         
         this.currentRecord = new RecordInfo(name);
         this.currentFields = [];
@@ -51,8 +57,10 @@ class DisplayFile {
         
       case ' ':
         if ((x !== "" && y !== "") || inout === "H") {
-          if (this.currentField !== null)
+          if (this.currentField !== null) {
+            this.currentField.handleKeywords();
             this.currentFields.push(this.currentField);
+          }
           
           if (inout === "H")
           {
@@ -124,9 +132,15 @@ class DisplayFile {
       }
     });
     
-    if (this.currentField !== null) this.currentFields.push(this.currentField);
+    if (this.currentField !== null) {
+      this.currentField.handleKeywords();
+      this.currentFields.push(this.currentField);
+    };
     if (this.currentFields !== null) this.currentRecord.fields = this.currentFields;
-    if (this.currentRecord !== null) this.formats.push(this.currentRecord);
+    if (this.currentRecord !== null) {
+      this.currentRecord.handleKeywords();
+      this.formats.push(this.currentRecord);
+    }
 
     this.currentField = null;
     this.currentFields = null;
@@ -138,67 +152,95 @@ class DisplayFile {
   * @returns 
   */
   HandleKeywords(keywords) {
-    if (keywords.startsWith(`'`) || keywords.endsWith(`'`) || keywords.endsWith(`-`))
-    {
-      if (keywords.startsWith(`'`)) keywords = keywords.substring(1);
-      if (keywords.endsWith(`'`) || keywords.endsWith(`-`)) 
-        keywords = keywords.substring(0, keywords.length - 1);
+    if (keywords.length === 0) return;
 
-      if (this.currentField) {
-        this.currentField.value += keywords;
-      }
-      return;
-    }
-
-    if (keywords.includes("(") && keywords.includes(")")) {
-      let midIndex = keywords.indexOf('(');
-      let option = keywords.substring(0, midIndex).toUpperCase();
-      let value = keywords.substring(midIndex + 1);
-      value = value.substring(0, value.length - 1);
-      
-      if (this.currentField === null) {
-        switch (option.toUpperCase())
-        {
-        case "WINDOW":
-          this.currentRecord.isWindow = true;
-          let points = value.split(' ');
-          //WINDOW (STARTY STARTX SIZEY SIZEX)
-          this.currentRecord.windowSize = {
-            width: Number(points[3]),
-            height: Number(points[2])
-          };
-          break;
-
-        default:
-          this.currentRecord.keywords.push({
-            name: option.toUpperCase(),
-            value
-          })
-          break;
-        }
-
-      } else {
-        this.currentField.keywords.push({
-          name: option.toUpperCase(),
-          value
-        });
-      }
+    if (this.currentField) {
+      this.currentField.keywordStrings.push(keywords);
     } else {
-      const words = keywords.split(` `);
-      words.forEach(word => {
-        if (this.currentField === null) {
-          this.currentRecord.keywords.push({
-            name: word.toUpperCase(),
-            value: null
-          });
-        } else {
-          this.currentField.keywords.push({
-            name: word.toUpperCase(),
-            value: null
-          });
-        }
-      });
+      this.currentRecord.keywordStrings.push(keywords);
     }
+  }
+
+  /** @param {string[]} keywordStrings */
+  static parseKeywords(keywordStrings) {
+    let result = {
+      value: ``,
+      keywords: []
+    };
+
+    let inString = false;
+    let value = ``;
+  
+    keywordStrings.forEach(keywordString => {
+      if (keywordString.startsWith(`'`)) {
+        inString = true;
+        keywordString = keywordString.substring(1);
+  
+        if (keywordString.endsWith(`'`) || keywordString.endsWith(`-`)) {
+          keywordString = keywordString.substring(0, keywordString.length - 1);
+        }
+  
+        result.value = keywordString;
+        return;
+      }
+  
+      if (keywordString.endsWith('-')) {
+        if (inString)
+          result.value += keywordString.substring(0, keywordString.length - 1);
+        else
+          value += keywordString.substring(0, keywordString.length - 1);
+      } else 
+      if (keywordString.endsWith(`'`)) {
+        if (inString) {
+          result.value += keywordString.substring(0, keywordString.length - 1);
+          inString = false; 
+        }
+      } else {
+        value += keywordString + ` `;
+      }
+    });
+  
+    if (value.length > 0) {
+      value += ` `;
+        
+      let inBrakcets = false;
+      let word = ``;
+      let innerValue = ``;
+  
+      for (let i = 0; i < value.length; i++) {
+        switch (value[i]) {
+        case `(`:
+          inBrakcets = true;
+          break;
+        case `)`:
+          inBrakcets = false;
+          break;
+        case ` `:
+          if (inBrakcets) {
+            innerValue += value[i];
+          } else {
+            if (word.length > 0) {
+              result.keywords.push({
+                name: word.toUpperCase(),
+                value: innerValue.length > 0 ? innerValue : undefined
+              });
+  
+              word = ``;
+              innerValue = ``;
+            }
+          }
+          break;
+        default:
+          if (inBrakcets) 
+            innerValue += value[i];
+          else
+            word += value[i];
+          break;
+        }
+      }
+    }
+    
+    return result;
   }
 }
 
@@ -215,8 +257,31 @@ class RecordInfo {
       height: 24
     };
 
+    /** @type {string[]} */
+    this.keywordStrings = [];
+
     /** @type {{name: string, value: string}[]} */
     this.keywords = [];
+  }
+
+  handleKeywords() {
+    const data = DisplayFile.parseKeywords(this.keywordStrings);
+
+    this.keywords = data.keywords;
+
+    this.keywords.forEach(keyword => {
+      switch (keyword.name) {
+      case "WINDOW":
+        this.isWindow = true;
+        let points = keyword.value.split(' ');
+        //WINDOW (STARTY STARTX SIZEY SIZEX)
+        this.windowSize = {
+          width: Number(points[3]),
+          height: Number(points[2])
+        };
+        break;
+      }
+    });
   }
 }
 
@@ -242,8 +307,19 @@ class FieldInfo {
       y: 0
     };
 
+    /** @type {string[]} */
+    this.keywordStrings = [];
+
     /** @type {{name: string, value: string}[]} */
     this.keywords = [];
+  }
+
+  handleKeywords() {
+    const data = DisplayFile.parseKeywords(this.keywordStrings);
+
+    this.keywords = data.keywords;
+
+    if (data.value.length > 0) this.value = data.value;
   }
 }
 
