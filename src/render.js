@@ -3,7 +3,7 @@ const { DisplayFile, FieldInfo } = require(`./dspf`);
 
 const colors = {
   RED: `red`,
-  BLU: `blue`,
+  BLU: `#4287f5`,
   WHT: `white`,
   GRN: `green`,
   TRQ: `turquoise`,
@@ -21,8 +21,6 @@ module.exports = class Render {
    * @param {string} format 
    */
   getHTML(format) {
-    const content = this.getFormatContent(format);
-
     let css = [
       `#container {`,
       `  font-family: monospace;`,
@@ -46,14 +44,31 @@ module.exports = class Render {
       `    opacity: 0;`,
       `  }`,
       `}`,
-      content.css,
     ].join(` `);
 
-    let body = [
-      `<div id="container">`,
-      content.body,
-      `</div>`
-    ].join(``);
+    let body = `<div id="container">`;
+
+    if (format) {
+      const content = this.getFormatContent(format);
+
+      css += content.css;
+      body += content.body;
+
+    } else {
+      this.display.formats.forEach(currentFormat => {
+        if (currentFormat.keywords.find(key => key.name === `SFL`)) {
+          // All but subfiles
+          return;
+        }
+
+        const content = this.getFormatContent(currentFormat.name);
+
+        css += content.css;
+        body += content.body;
+      });
+    }
+
+    body += `</div>`;
 
     return [
       `<html>`,

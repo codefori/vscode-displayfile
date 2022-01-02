@@ -50,6 +50,19 @@ module.exports = class lensProvider {
       }
     });
 
+    // If codelens exist, that means there is formats
+    // Let's add a show all button
+    codeLens.push(new vscode.CodeLens(
+      new vscode.Range(
+        0, 0, 0, 0
+      ),
+      {
+        command: `vscode-displayfile.render`,
+        title: `Preview all`,
+        arguments: [lines]
+      }
+    ));
+
     return codeLens;
   }
 }
