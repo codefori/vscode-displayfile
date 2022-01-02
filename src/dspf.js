@@ -144,7 +144,9 @@ class DisplayFile {
       if (keywords.endsWith(`'`) || keywords.endsWith(`-`)) 
         keywords = keywords.substring(0, keywords.length - 1);
 
-      this.currentField.value += keywords;
+      if (this.currentField) {
+        this.currentField.value += keywords;
+      }
       return;
     }
 
