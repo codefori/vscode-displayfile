@@ -139,21 +139,22 @@ module.exports = class Render {
    */
   static getContent(field) {
     if (field.displayType !== `hidden`) {
-      const length = field.length > 0 ? field.length : field.value.length;
-      const value = field.value.replace(/ /g,"&nbsp;")
+      // Hacky way to make names valid IDs
+      const name = field.name
+        .replace(new RegExp(`1`, `g`), `ONE`)
+        .replace(new RegExp(`2`, `g`), `TWO`)
+        .replace(new RegExp(`3`, `g`), `THREE`)
+        .replace(new RegExp(`4`, `g`), `FOUR`)
+        .replace(new RegExp(`5`, `g`), `FIVE`)
+        .replace(new RegExp(`6`, `g`), `SIX`)
+        .replace(new RegExp(`7`, `g`), `SEVEN`)
+        .replace(new RegExp(`8`, `g`), `EIGHT`)
+        .replace(new RegExp(`9`, `g`), `NINE`)
+        .replace(new RegExp(`0`, `g`), `ZERO`)
+        .replace(new RegExp(`#`, `g`), `HASH`)
+        .replace(new RegExp(`_`, `g`), `US`)
 
-      let body = `<div id="${field.name}">${value.padEnd(length, `-`)}</div>`
-      let css = `#${field.name} {`;
-
-      css += [
-        `position: absolute`,
-        `width: ${length * 11}px`,
-        `height: 19px`,
-        `top: ${field.position.y * 20}px`,
-        `left: ${field.position.x * 11}px`,
-      ].join(`;`);
-
-      css += `;`
+      let css = `#${name} {`;
 
       const keywords = field.keywords;
 
@@ -162,6 +163,12 @@ module.exports = class Render {
         switch (key) {
         case `COLOR`:
           css += `color: ${colors[keyword.value]};`
+          break;
+        case `SYSNAME`:
+          field.value = `SYSNAME_`
+          break;
+        case `USER`:
+          field.value = `USERNAME__`
           break;
         case `DSPATR`:
           keyword.value.split(` `).forEach(value => {
@@ -179,7 +186,22 @@ module.exports = class Render {
           })
           break;
         }
-      })
+      });
+
+      const length = field.length > 0 ? field.length : field.value.length;
+      const value = field.value; //field.value.replace(/ /g," ")
+
+      let body = `<div id="${name}">${value.padEnd(length, `-`)}</div>`
+
+      css += [
+        `position: absolute`,
+        `width: ${length * 11}px`,
+        `height: 19px`,
+        `top: ${(field.position.y - 1) * 20}px`,
+        `left: ${(field.position.x - 1) * 11}px`,
+      ].join(`;`);
+
+      css += `;`
 
       css += `} `;
 

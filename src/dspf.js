@@ -144,6 +144,7 @@ class DisplayFile {
       this.currentField.value += keywords;
       return;
     }
+
     if (keywords.includes("(") && keywords.includes(")")) {
       let midIndex = keywords.indexOf('(');
       let option = keywords.substring(0, midIndex).toUpperCase();
@@ -177,6 +178,21 @@ class DisplayFile {
           value
         });
       }
+    } else {
+      const words = keywords.split(` `);
+      words.forEach(word => {
+        if (this.currentField === null) {
+          this.currentRecord.keywords.push({
+            name: word.toUpperCase(),
+            value: null
+          });
+        } else {
+          this.currentField.keywords.push({
+            name: word.toUpperCase(),
+            value: null
+          });
+        }
+      });
     }
   }
 }
@@ -201,6 +217,7 @@ class RecordInfo {
 
 class FieldInfo {
   constructor(name) {
+    /** @type {string} */
     this.name = name;
 
     /** @type {string} */
