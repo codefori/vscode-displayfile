@@ -184,6 +184,9 @@ module.exports = class Render {
 
         if (subfileRecord) {
           // TODO: handle rows...
+          const low = Math.min(...subfileRecord.fields.map(field => field.position.y));
+          const high = Math.max(...subfileRecord.fields.map(field => field.position.y));
+          const linesPerItem = (high - low) + 1
           
           for (let row = 0; row < rows; row++) {
             subfileRecord.fields.forEach(field => {
@@ -192,7 +195,7 @@ module.exports = class Render {
               css += content.css;
               body += content.html;
               
-              field.position.y += 1;
+              field.position.y += linesPerItem;
             });
           }
 
