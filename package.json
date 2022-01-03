@@ -20,6 +20,9 @@
 	"contributes": {
 		"commands": []
 	},
+	"extensionDependencies": [
+		"barrettotte.ibmi-languages"
+	],
 	"scripts": {
 		"lint": "eslint .",
 		"pretest": "npm run lint",
