@@ -63,7 +63,7 @@ module.exports = class Render {
           x: x * 11,
           y: y * 20,
           width: width * 11,
-          height: height * 20
+          height: (height-1) * 20
         };
 
         const borderInfo = topMostFormat.keywords.find(keyword => keyword.name === `WDWBORDER`);
