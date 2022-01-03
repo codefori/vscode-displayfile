@@ -3,6 +3,10 @@
 	"displayName": "vscode-displayfile",
 	"description": "Preview IBM i display files",
 	"version": "0.0.1",
+	"author": {
+		"name": "Halcyon-Tech, Liam Allan"
+	},
+	"repository": "https://github.com/halcyon-tech/vscode-displayfile",
 	"engines": {
 		"vscode": "^1.63.0"
 	},
@@ -19,7 +23,8 @@
 	"scripts": {
 		"lint": "eslint .",
 		"pretest": "npm run lint",
-		"test": "node ./test/runTest.js"
+		"test": "node ./test/runTest.js",
+		"package": "vsce package"
 	},
 	"devDependencies": {
 		"@types/glob": "^7.1.4",
