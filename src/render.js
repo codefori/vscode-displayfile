@@ -1,5 +1,5 @@
 
-const { DisplayFile, FieldInfo } = require(`./dspf`);
+const { DisplayFile, FieldInfo, RecordInfo } = require(`./dspf`);
 
 const colors = {
   RED: `red`,
@@ -40,13 +40,54 @@ module.exports = class Render {
    * @param {string} format 
    */
   getHTML(format) {
+    let size = {
+      width: 880,
+      height: 480
+    };
+
+    /** @type {{x: number, y: number, width: number, height: number, color?: string}} */
+    let window;
+
+    /** @type {RecordInfo} */
+    let topMostFormat;
+    if (format) {
+      topMostFormat = this.display.formats.find(currentFormat => currentFormat.name === format);
+    } else {
+      topMostFormat = this.display.formats.find(currentFormat => currentFormat.name === `GLOBAL`);
+    }
+
+    if (topMostFormat) {
+      if (topMostFormat.isWindow) {
+        const { x, y, width, height } = topMostFormat.windowSize;
+        window = {
+          x: x * 11,
+          y: y * 20,
+          width: width * 11,
+          height: height * 20
+        };
+
+        const borderInfo = topMostFormat.keywords.find(keyword => keyword.name === `WDWBORDER`);
+        if (borderInfo) {
+          const parts = borderInfo.value.split(` `);
+
+          parts.forEach((part, index) => {
+            switch (part.toUpperCase()) {
+            case `*COLOR`:
+              window.color = parts[index + 1];
+              break;
+            }
+          });
+        }
+      }
+    }
+
     let css = [
       `#container {`,
       `  font-family: monospace;`,
       `  font-size: 18px;`,
       `  border: solid black 1px;`,
-      `  width: 880px;`,
-      `  height: 480px;`,
+      `  width: ${size.width}px;`,
+      `  height: ${size.height}px;`,
       `  position: absolute;`,
       `  --g: transparent calc(100% - 1px), #ebebeb 0;`,
       `  letter-spacing: 0.15px;`,
@@ -66,7 +107,26 @@ module.exports = class Render {
       `}`,
     ].join(` `);
 
+    // If this is a window, add the window CSS
+    if (window) {
+      const windowColor = colors[window.color] || colors.BLU;
+      css += [
+        `#window {`,
+        `  position: absolute;`,
+        `  width: ${window.width}px;`,
+        `  height: ${window.height}px;`,
+        `  top: ${window.y}px;`,
+        `  left: ${window.x}px;`,
+        `  border: solid ${windowColor} 2px;`,
+        `}`,
+      ].join(` `);
+    }
+
     let body = `<div id="container">`;
+
+    if (window) {
+      body += `<div id="window">`;
+    }
 
     if (format) {
       const content = this.getFormatContent(format);
@@ -86,6 +146,10 @@ module.exports = class Render {
         css += content.css;
         body += content.body;
       });
+    }
+
+    if (window) {
+      body += `</div>`;
     }
 
     body += `</div>`;

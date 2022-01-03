@@ -212,20 +212,20 @@ class DisplayFile {
     if (value.length > 0) {
       value += ` `;
         
-      let inBrakcets = false;
+      let inBrakcets = 0;
       let word = ``;
       let innerValue = ``;
   
       for (let i = 0; i < value.length; i++) {
         switch (value[i]) {
         case `(`:
-          inBrakcets = true;
+          inBrakcets++;
           break;
         case `)`:
-          inBrakcets = false;
+          inBrakcets--;
           break;
         case ` `:
-          if (inBrakcets) {
+          if (inBrakcets > 0) {
             innerValue += value[i];
           } else {
             if (word.length > 0) {
@@ -240,7 +240,7 @@ class DisplayFile {
           }
           break;
         default:
-          if (inBrakcets) 
+          if (inBrakcets > 0) 
             innerValue += value[i];
           else
             word += value[i];
@@ -262,6 +262,8 @@ class RecordInfo {
     
     this.isWindow = false;
     this.windowSize = {
+      y: 0,
+      x: 0,
       width: 80,
       height: 24
     };
@@ -285,6 +287,8 @@ class RecordInfo {
         let points = keyword.value.split(' ');
         //WINDOW (STARTY STARTX SIZEY SIZEX)
         this.windowSize = {
+          y: Number(points[0]),
+          x: Number(points[1]),
           width: Number(points[3]),
           height: Number(points[2])
         };
