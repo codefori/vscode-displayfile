@@ -80,7 +80,7 @@ function activate(context) {
             }
           }
         }
-      }, 2000);
+      }, 1500);
 
     }),
 
