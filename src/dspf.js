@@ -56,16 +56,10 @@ class DisplayFile {
         break;
         
       case ' ':
-        if ((x !== "" && y !== "") || inout === "H") {
+        if ((x !== "" && y !== "") && inout !== "H") {
           if (this.currentField !== null) {
             this.currentField.handleKeywords();
             this.currentFields.push(this.currentField);
-          }
-          
-          if (inout === "H")
-          {
-            x = "0"; 
-            y = "0";
           }
           
           this.currentField = new FieldInfo();
