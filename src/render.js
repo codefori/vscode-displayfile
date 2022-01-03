@@ -11,6 +11,25 @@ const colors = {
   PNK: `pink`
 };
 
+const dateFormats = {
+  '*MDY': `mm/dd/yyyy`,
+  '*DMY': `dd/mm/yyyy`,
+  '*YMD': `yyyy/mm/dd`,
+  '*JUL': 'yy/ddd',
+  '*ISO': 'yyyy-mm-dd',
+  '*USA': 'mm/dd/yyyy',
+  '*EUR': 'dd.mm.yyyy',
+  '*JIS': 'yyyy-mm-dd',
+};
+
+const timeFormats = {
+  '*HMS': 'hh:mm:ss',
+  '*ISO': 'hh.mm.ss',
+  '*USA': 'hh:mm am',
+  '*EUR': 'hh.mm.ss',
+  '*JIS': 'hh:mm:ss',
+};
+
 module.exports = class Render {
   constructor(display) {
     /** @type {DisplayFile} */
@@ -159,6 +178,8 @@ module.exports = class Render {
 
       const keywords = field.keywords;
 
+      let seperator = ``;
+
       keywords.forEach(keyword => {
         const key = keyword.name;
         switch (key) {
@@ -170,6 +191,30 @@ module.exports = class Render {
           break;
         case `USER`:
           field.value = `USERNAME__`
+          break;
+        case `DATE`:
+          const dateSep = keywords.find(keyword => keyword.name === `DATSEP`);
+          
+          const dateFormat = keywords.find(keyword => keyword.name === `DATFMT`);
+          if (dateFormat) {
+            field.value = dateFormats[dateFormat.value] || `?FORMAT?`;
+
+            if (dateSep && dateSep.value.toUpperCase() !== `*JOB`) {
+              field.value = field.value.replace(new RegExp(`[./-:]`, `g`), dateSep.value);
+            }
+          }
+          break;
+        case `TIME`:
+          const sep = keywords.find(keyword => keyword.name === `TIMSEP`);
+          
+          const format = keywords.find(keyword => keyword.name === `TIMFMT`);
+          if (format) {
+            field.value = timeFormats[format.value] || `?FORMAT?`;
+
+            if (sep && sep.value.toUpperCase() !== `*JOB`) {
+              field.value = field.value.replace(new RegExp(`[./-:]`, `g`), sep.value);
+            }
+          }
           break;
         case `DSPATR`:
           keyword.value.split(` `).forEach(value => {
@@ -194,7 +239,26 @@ module.exports = class Render {
         .replace(/ /g, `&nbsp;`)
         .replace(new RegExp(`''`, `g`), `'`);
 
-      let body = `<div id="${name}">${value.padEnd(length, `-`)}</div>`
+      let padString = `-`;
+
+      switch (field.type) {
+      case `char`:
+        switch (field.displayType) {
+        case `input`: padString = `I`; break;
+        case `output`: padString = `O`; break;
+        case `both`: padString = `B`; break;
+        }
+        break;
+      case `decimal`:
+        switch (field.displayType) {
+        case `input`: padString = `3`; break;
+        case `output`: padString = `6`; break;
+        case `both`: padString = `9`; break;
+        }
+        break;
+      }
+
+      let body = `<div id="${name}">${value.padEnd(length, padString)}</div>`
 
       css += [
         `position: absolute`,
@@ -202,9 +266,11 @@ module.exports = class Render {
         `height: 19px`,
         `top: ${(field.position.y - 1) * 20}px`,
         `left: ${(field.position.x - 1) * 11}px`,
-      ].join(`;`);
+      ].join(`;`) + `;`;
 
-      css += `;`
+      if ([`input`, `both`].includes(field.displayType)) {
+        css += `text-decoration: underline;`;
+      }
 
       css += `} `;
 

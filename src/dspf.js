@@ -102,8 +102,17 @@ class DisplayFile {
             switch (type)
             {
             case "D":
+            case "Z":
               this.currentField.type = `decimal`;
               if (dec != "") this.currentField.decimals = Number(dec);
+              break;
+            case `L`: //Date
+              this.currentField.length = 8;
+              this.currentField.type = `char`;
+              break;
+            case `T`: //Time
+              this.currentField.length = 8;
+              this.currentField.type = `char`;
               break;
             default:
               this.currentField.type = `char`;
