@@ -183,13 +183,14 @@ module.exports = class Render {
         const subfileRecord = formats.find(format => format.name === subfileFormat.value);
 
         if (subfileRecord) {
-          // TODO: handle rows...
-          const low = Math.min(...subfileRecord.fields.map(field => field.position.y));
-          const high = Math.max(...subfileRecord.fields.map(field => field.position.y));
+          const subfileFields = subfileRecord.fields.filter(field => field.displayType !== `hidden`);
+          
+          const low = Math.min(...subfileFields.map(field => field.position.y));
+          const high = Math.max(...subfileFields.map(field => field.position.y));
           const linesPerItem = (high - low) + 1
           
           for (let row = 0; row < rows; row++) {
-            subfileRecord.fields.forEach(field => {
+            subfileFields.forEach(field => {
               field.name = `${field.name}_${row}`;
               const content = Render.getContent(field);
               css += content.css;
@@ -205,7 +206,8 @@ module.exports = class Render {
         }
       }
 
-      format.fields.forEach(field => {
+      const fields = format.fields.filter(field => field.displayType !== `hidden`);
+      fields.forEach(field => {
         const content = Render.getContent(field);
         css += content.css;
         body += content.html;
@@ -239,6 +241,7 @@ module.exports = class Render {
         .replace(new RegExp(`9`, `g`), `NINE`)
         .replace(new RegExp(`0`, `g`), `ZERO`)
         .replace(new RegExp(`#`, `g`), `HASH`)
+        .replace(new RegExp(`@`, `g`), `HASH`)
         .replace(new RegExp(`_`, `g`), `US`)
 
       let css = `#${name} {`;
