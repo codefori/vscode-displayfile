@@ -6,6 +6,9 @@ const lensProvider = require(`./lensProvider`);
 
 const { DisplayFile } = require(`./dspf`);
 const Render = require(`./render`);
+const Window = require(`./window`);
+
+let renderTimeout;
 
 // this method is called when your extension is activated
 // your extension is activated the very first time the command is executed
@@ -36,20 +39,49 @@ function activate(context) {
 
         const html = render.getHTML(format);
 
-        const panel = vscode.window.createWebviewPanel(
-          `displayFile`,
-          format || `Preview`,
-          vscode.ViewColumn.Active
-        );
-    
-        panel.webview.html = html;
+        Window.create();
+        Window.update(html);
 
       } catch (e) {
         console.log(e);
       }
+    }),
 
-      // TODO: parse
-      // TODO: render
+    vscode.window.onDidChangeTextEditorSelection((event) => {
+      const editor = event.textEditor;
+      const selection = editor.selection;
+
+      clearTimeout(renderTimeout);
+
+      renderTimeout = setTimeout(() => {
+        if (Window.isActive()) {
+          if (editor) {
+            const document = editor.document;
+            const id = document.languageId;
+  
+            if (id === `dds.dspf`) {
+              const eol = document.eol === vscode.EndOfLine.CRLF ? `\r\n` : `\n`;
+              const sourceLines = document.getText().split(eol);
+  
+              const dspf = new DisplayFile();
+              dspf.parse(sourceLines);
+  
+              const render = new Render(dspf);
+  
+              const line = selection.start.line;
+  
+              const format = dspf.formats.find(f => line >= f.range.start && line < f.range.end);
+  
+              if (format) {
+                const html = render.getHTML(format.name);
+  
+                Window.update(html);
+              }
+            }
+          }
+        }
+      }, 2000);
+
     }),
 
     vscode.languages.registerCodeLensProvider(

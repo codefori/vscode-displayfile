@@ -22,7 +22,7 @@ class DisplayFile {
     
     let name, len, type, dec, inout, x, y, keywords;
     
-    lines.forEach(line => {
+    lines.forEach((line, index) => {
       line = line.padEnd(80);
 
       if (line[6] === `*`) return;
@@ -44,11 +44,14 @@ class DisplayFile {
         };
         if (this.currentFields !== null) this.currentRecord.fields = this.currentFields;
         if (this.currentRecord !== null) {
+          this.currentRecord.range.end = index;
           this.currentRecord.handleKeywords();
           this.formats.push(this.currentRecord);
         }
         
         this.currentRecord = new RecordInfo(name);
+        this.currentRecord.range.start = index;
+
         this.currentFields = [];
         this.currentField = null;
         
@@ -141,6 +144,7 @@ class DisplayFile {
     };
     if (this.currentFields !== null) this.currentRecord.fields = this.currentFields;
     if (this.currentRecord !== null) {
+      this.currentRecord.range.end = lines.length;
       this.currentRecord.handleKeywords();
       this.formats.push(this.currentRecord);
     }
@@ -253,6 +257,11 @@ class RecordInfo {
     
     /** @type {FieldInfo[]} */
     this.fields = [];
+
+    this.range = {
+      start: -1,
+      end: -1
+    };
     
     this.isWindow = false;
     this.windowSize = {
