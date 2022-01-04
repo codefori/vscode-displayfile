@@ -23,6 +23,8 @@ function activate(context) {
   console.log('Congratulations, your extension "vscode-displayfile" is now active!');
 
   const lens = new lensProvider();
+  
+  const config = vscode.workspace.getConfiguration('vscode-displayfile');
 
   // The command has been defined in the package.json file
   // Now provide the implementation of the command with  registerCommand
@@ -50,6 +52,8 @@ function activate(context) {
     vscode.window.onDidChangeTextEditorSelection((event) => {
       const editor = event.textEditor;
       const selection = editor.selection;
+
+      const timeout = config.get(`renderTimeout`) || 1500;
 
       clearTimeout(renderTimeout);
 
@@ -80,7 +84,7 @@ function activate(context) {
             }
           }
         }
-      }, 1500);
+      }, timeout);
 
     }),
 

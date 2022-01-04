@@ -19,6 +19,17 @@
 	],
 	"main": "./src/extension.js",
 	"contributes": {
+		"configuration": {
+			"title": "Display File",
+			"properties": {
+				"vscode-displayfile.renderTimeout": {
+					"type": "number",
+					"description": "Amount of time to wait before rendering changes after the cursor has moved. You may have to restart VS Code if you change this value.",
+					"default": 1500,
+					"minimum": 0
+				}
+			}
+		},
 		"commands": []
 	},
 	"extensionDependencies": [
