@@ -319,7 +319,7 @@ module.exports = class Render {
   static getContent(field) {
     if (field.displayType !== `hidden`) {
       // Hacky way to make names valid IDs
-      const name = field.name
+      const htmlName = field.name
         .replace(new RegExp(`1`, `g`), `ONE`)
         .replace(new RegExp(`2`, `g`), `TWO`)
         .replace(new RegExp(`3`, `g`), `THREE`)
@@ -334,7 +334,7 @@ module.exports = class Render {
         .replace(new RegExp(`@`, `g`), `HASH`)
         .replace(new RegExp(`_`, `g`), `US`)
 
-      let css = `#${name} {`;
+      let css = `#${htmlName} {`;
 
       const keywords = field.keywords;
 
@@ -416,7 +416,17 @@ module.exports = class Render {
         break;
       }
 
-      let body = `<div id="${name}">${value.padEnd(length, padString)}</div>`
+      let hoverText;
+
+      if (field.displayType !== `const`) {
+        // Remove unique subfield names
+        const displayName = field.name.includes(`_0`) ? field.name.substring(0, field.name.indexOf(`_0`)) : field.name;
+
+        const textKeyword = keywords.find(keyword => keyword.name === `TEXT`);
+        hoverText = `${displayName} ${textKeyword ? textKeyword.value : ``}`.trim();
+      }
+
+      let body = `<div id="${htmlName}">${hoverText ? `<div id="${htmlName}_tooltip">${hoverText}</div>` : ``}${value.padEnd(length, padString)}</div>`
 
       css += [
         `position: absolute`,
@@ -431,6 +441,49 @@ module.exports = class Render {
       }
 
       css += `} `;
+
+      if (hoverText) {
+        css += `` + 
+        [
+          `#${htmlName} #${htmlName}_tooltip {`,
+          `  font-size: 12px;`,
+          `  visibility: hidden;`,
+          `  width: 120px;`,
+          `  background-color: #121212;`,
+          `  color: #fff;`,
+          `  text-align: center;`,
+          `  border-radius: 6px;`,
+          `  padding: 5px 0;`,
+          `  `,
+          `  /* Position the tooltip */`,
+          `  position: absolute;`,
+          `  z-index: 1;`,
+          `  top: 100%;`,
+          `  left: 50%;`,
+          `  margin-left: -60px;`,
+          `  margin-top: 10px;`,
+          `}`
+        ].join(``);
+        
+        css += [
+          `#${htmlName}:hover #${htmlName}_tooltip {`,
+          `  visibility: visible;`,
+          `}`,
+        ].join(``) + ` `;
+
+        css += [
+          `#${htmlName} #${htmlName}_tooltip::after {`,
+          `  content: "";`,
+          `  position: absolute;`,
+          `  bottom: 100%;  /* At the top of the tooltip */`,
+          `  left: 50%;`,
+          `  margin-left: -5px;`,
+          `  border-width: 5px;`,
+          `  border-style: solid;`,
+          `  border-color: transparent transparent #121212 transparent;`,
+          `}`,
+        ].join(``) + ` `;
+      }
 
       return {
         css,
