@@ -36,32 +36,15 @@ module.exports = class Render {
     this.display = display;
   }
 
-  /**
-   * @param {string} format 
-   */
-  getHTML(format) {
-    const globalFormat = this.display.formats.find(currentFormat => currentFormat.name === `GLOBAL`);
-
+  generate(format) {
     let size = {
       width: 880,
       height: 480
     };
 
+    const globalFormat = this.display.formats.find(currentFormat => currentFormat.name === `GLOBAL`);
+
     let parts;
-
-    /** @type {{baseX: number, baseY: number, baseWidth: number, baseHeight: number, x: number, y: number, width: number, height: number, color?: string}} */
-    let window;
-
-    /** @type {FieldInfo} */
-    let windowTitle;
-
-    /** @type {RecordInfo} */
-    let topMostFormat;
-    if (format) {
-      topMostFormat = this.display.formats.find(currentFormat => currentFormat.name === format);
-    } else {
-      topMostFormat = globalFormat;
-    }
 
     if (globalFormat) {
       const displaySize = globalFormat.keywords.find(keyword => keyword.name === `DSPSIZ`);
@@ -80,10 +63,77 @@ module.exports = class Render {
       }
     }
 
-    if (topMostFormat) {
-      if (topMostFormat.isWindow) {
-        const { x, y, width, height } = topMostFormat.windowSize;
-        window = {
+    let css = [
+      `#container {`,
+      `  font-family: monospace;`,
+      `  font-size: 18px;`,
+      `  border: solid black 1px;`,
+      `  width: ${size.width}px;`,
+      `  height: ${size.height}px;`,
+      `  position: absolute;`,
+      `  --g: transparent calc(100% - 1px), #ebebeb 0;`,
+      `  letter-spacing: 0.15px;`,
+      `  color: ${colors.GRN};`,
+      `  background:`,
+      // `    linear-gradient(to right, var(--g)),`,
+      // `    linear-gradient(to bottom, var(--g)), `,
+      `    black;`,
+      `  background-size:`,
+      `    11px 100%,`,
+      `    100% 20px;`,
+      `}`,
+      `@keyframes blinker {`,
+      `  50% {`,
+      `    opacity: 0;`,
+      `  }`,
+      `}`,
+    ].join(` `);
+
+    let body = `<div id="container">`;
+
+    const content = this.getHTML(format);
+    css += content.css;
+    body += content.body;
+
+    return [
+      `<html>`,
+      `<style>${css}</style>`,
+      `<body>${body}</body>`,
+      `</html>`
+    ].join(``);
+  }
+
+  /**
+   * @param {string} format 
+   */
+  getHTML(format) {
+    let parts;
+
+    /** @type {RecordInfo} */
+    let windowFormat;
+
+    /** @type {{baseX: number, baseY: number, baseWidth: number, baseHeight: number, x: number, y: number, width: number, height: number, color?: string}} */
+    let windowConfig;
+
+    /** @type {FieldInfo} */
+    let windowTitle;
+
+    /** @type {RecordInfo} */
+    let recordFormat;
+    if (format) {
+      recordFormat = this.display.formats.find(currentFormat => currentFormat.name === format);
+    }
+
+    if (recordFormat) {
+      if (recordFormat.isWindow) {
+        if (recordFormat.windowReference) {
+          windowFormat = this.display.formats.find(currentFormat => currentFormat.name === recordFormat.windowReference);
+        } else {
+          windowFormat = recordFormat;
+        }
+
+        const { x, y, width, height } = windowFormat.windowSize;
+        windowConfig = {
           baseX: x,
           baseY: y,
           baseWidth: width,
@@ -94,20 +144,20 @@ module.exports = class Render {
           height: (height-1) * 20
         };
 
-        const borderInfo = topMostFormat.keywords.find(keyword => keyword.name === `WDWBORDER`);
+        const borderInfo = windowFormat.keywords.find(keyword => keyword.name === `WDWBORDER`);
         if (borderInfo) {
           parts = Render.parseParms(borderInfo.value);
 
           parts.forEach((part, index) => {
             switch (part.toUpperCase()) {
             case `*COLOR`:
-              window.color = parts[index + 1];
+              windowConfig.color = parts[index + 1];
               break;
             }
           });
         }
 
-        const windowInfo = topMostFormat.keywords.find(keyword => keyword.name === `WDWTITLE`);
+        const windowInfo = windowFormat.keywords.find(keyword => keyword.name === `WDWTITLE`);
         if (windowInfo) {
           windowTitle = new FieldInfo(`WINDOWTITLE`);
           windowTitle.type = `char`;
@@ -158,18 +208,18 @@ module.exports = class Render {
 
           const txtLength = windowTitle.value.length;
 
-          const yPosition = (window.baseY) + (yPositionValue === `top` ? 0 : window.baseHeight);
-          let xPosition = (window.baseX + 1);
+          const yPosition = (windowConfig.baseY) + (yPositionValue === `top` ? 0 : windowConfig.baseHeight);
+          let xPosition = (windowConfig.baseX + 1);
 
           switch (xPositionValue) {
           case `center`:
-            xPosition = (window.baseX + 1) + Math.floor((window.baseWidth / 2) - (txtLength / 2));
+            xPosition = (windowConfig.baseX + 1) + Math.floor((windowConfig.baseWidth / 2) - (txtLength / 2));
             break;
           case `right`:
-            xPosition = (window.baseX + 1) + window.baseWidth - txtLength;
+            xPosition = (windowConfig.baseX + 1) + windowConfig.baseWidth - txtLength;
             break;
           case `left`:
-            xPosition = (window.baseX + 1);
+            xPosition = (windowConfig.baseX + 1);
             break;
           }
 
@@ -183,58 +233,42 @@ module.exports = class Render {
       }
     }
 
-    let css = [
-      `#container {`,
-      `  font-family: monospace;`,
-      `  font-size: 18px;`,
-      `  border: solid black 1px;`,
-      `  width: ${size.width}px;`,
-      `  height: ${size.height}px;`,
-      `  position: absolute;`,
-      `  --g: transparent calc(100% - 1px), #ebebeb 0;`,
-      `  letter-spacing: 0.15px;`,
-      `  color: ${colors.GRN};`,
-      `  background:`,
-      // `    linear-gradient(to right, var(--g)),`,
-      // `    linear-gradient(to bottom, var(--g)), `,
-      `    black;`,
-      `  background-size:`,
-      `    11px 100%,`,
-      `    100% 20px;`,
-      `}`,
-      `@keyframes blinker {`,
-      `  50% {`,
-      `    opacity: 0;`,
-      `  }`,
-      `}`,
-    ].join(` `);
+    let css = ``;
+    let body = ``;
 
+    if (windowFormat) {
     // If this is a window, add the window CSS
-    if (window) {
-      const windowColor = colors[window.color] || colors.BLU;
-      css += [
-        `#window {`,
-        `  position: absolute;`,
-        `  width: ${window.width}px;`,
-        `  height: ${window.height}px;`,
-        `  top: ${window.y}px;`,
-        `  left: ${window.x}px;`,
-        `  border: solid ${windowColor} 2px;`,
-        `}`,
-      ].join(` `);
-    }
+      if (windowConfig) {
+        const windowColor = colors[windowConfig.color] || colors.BLU;
+        css += [
+          `#${windowFormat.name} {`,
+          `  position: absolute;`,
+          `  width: ${windowConfig.width}px;`,
+          `  height: ${windowConfig.height}px;`,
+          `  top: ${windowConfig.y}px;`,
+          `  left: ${windowConfig.x}px;`,
+          `  border: solid ${windowColor} 2px;`,
+          `}`,
+        ].join(` `);
+      }
 
-    let body = `<div id="container">`;
+      if (windowTitle) {
+        const windowContent = Render.getContent(windowTitle);
 
-    if (windowTitle) {
-      const windowContent = Render.getContent(windowTitle);
+        css += windowContent.css;
+        body += windowContent.body;
+      }
 
-      css += windowContent.css;
-      body += windowContent.body;
-    }
+      if (windowConfig) {
+        body += `<div id="${windowFormat.name}">`;
+      }
 
-    if (window) {
-      body += `<div id="window">`;
+      if (windowFormat.name !== format) {
+        const windowContent = this.getFormatContent(windowFormat.name);
+
+        css += windowContent.css;
+        body += windowContent.body;
+      }
     }
 
     if (format) {
@@ -257,18 +291,14 @@ module.exports = class Render {
       });
     }
 
-    if (window) {
+    if (windowFormat && windowConfig) {
       body += `</div>`;
     }
 
-    body += `</div>`;
-
-    return [
-      `<html>`,
-      `<style>${css}</style>`,
-      `<body>${body}</body>`,
-      `</html>`
-    ].join(``);
+    return {
+      css,
+      body
+    }
   }
 
   /**

@@ -39,7 +39,7 @@ function activate(context) {
 
         const render = new Render(dspf);
 
-        const html = render.getHTML(format);
+        const html = render.generate(format);
 
         Window.create();
         Window.update(html);
@@ -77,7 +77,7 @@ function activate(context) {
               const format = dspf.formats.find(f => line >= f.range.start && line < f.range.end);
   
               if (format) {
-                const html = render.getHTML(format.name);
+                const html = render.generate(format.name);
   
                 Window.update(html);
               }
