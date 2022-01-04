@@ -106,10 +106,18 @@ class DisplayFile {
             case `L`: //Date
               this.currentField.length = 8;
               this.currentField.type = `char`;
+              this.currentField.keywords.push({
+                name: `DATE`,
+                value: undefined
+              });
               break;
             case `T`: //Time
               this.currentField.length = 8;
               this.currentField.type = `char`;
+              this.currentField.keywords.push({
+                name: `TIME`,
+                value: undefined
+              });
               break;
             default:
               this.currentField.type = `char`;
@@ -281,7 +289,7 @@ class RecordInfo {
   handleKeywords() {
     const data = DisplayFile.parseKeywords(this.keywordStrings);
 
-    this.keywords = data.keywords;
+    this.keywords.push(...data.keywords);
 
     this.keywords.forEach(keyword => {
       switch (keyword.name) {
@@ -333,7 +341,7 @@ class FieldInfo {
   handleKeywords() {
     const data = DisplayFile.parseKeywords(this.keywordStrings);
 
-    this.keywords = data.keywords;
+    this.keywords.push(...data.keywords);
 
     if (data.value.length > 0) this.value = data.value;
   }
