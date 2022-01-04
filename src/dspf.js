@@ -100,6 +100,7 @@ class DisplayFile {
             {
             case "D":
             case "Z":
+            case "Y":
               this.currentField.type = `decimal`;
               if (dec != "") this.currentField.decimals = Number(dec);
               break;
