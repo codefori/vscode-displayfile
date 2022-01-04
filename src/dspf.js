@@ -304,10 +304,10 @@ class RecordInfo {
         case 4:
           //WINDOW (STARTY STARTX SIZEY SIZEX)
           this.windowSize = {
-            y: Number(points[0]),
-            x: Number(points[1]),
+            y: Number(points[0]) || 2,
+            x: Number(points[1]) || 2,
             width: Number(points[3]),
-            height: Number(points[2])
+            height: Number(points[2]) + 1
           };
           break;
         case 1:
