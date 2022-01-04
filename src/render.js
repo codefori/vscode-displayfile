@@ -45,8 +45,11 @@ module.exports = class Render {
       height: 480
     };
 
-    /** @type {{x: number, y: number, width: number, height: number, color?: string}} */
+    /** @type {{baseX: number, baseY: number, baseWidth: number, baseHeight: number, x: number, y: number, width: number, height: number, color?: string}} */
     let window;
+
+    /** @type {FieldInfo} */
+    let windowTitle;
 
     /** @type {RecordInfo} */
     let topMostFormat;
@@ -60,15 +63,21 @@ module.exports = class Render {
       if (topMostFormat.isWindow) {
         const { x, y, width, height } = topMostFormat.windowSize;
         window = {
+          baseX: x,
+          baseY: y,
+          baseWidth: width,
+          baseHeight: height, 
           x: x * 11,
           y: y * 20,
           width: width * 11,
           height: (height-1) * 20
         };
 
+        let parts;
+
         const borderInfo = topMostFormat.keywords.find(keyword => keyword.name === `WDWBORDER`);
         if (borderInfo) {
-          const parts = borderInfo.value.split(` `);
+          parts = Render.parseParms(borderInfo.value);
 
           parts.forEach((part, index) => {
             switch (part.toUpperCase()) {
@@ -78,6 +87,72 @@ module.exports = class Render {
             }
           });
         }
+
+        const windowInfo = topMostFormat.keywords.find(keyword => keyword.name === `WDWTITLE`);
+        if (windowInfo) {
+          windowTitle = new FieldInfo(`WINDOWTITLE`);
+          windowTitle.type = `char`;
+          windowTitle.displayType = `const`;
+
+          let xPositionValue = `center`;
+          let yPositionValue = `top`;
+
+          parts = Render.parseParms(windowInfo.value);
+
+          parts.forEach((part, index) => {
+            switch (part.toUpperCase()) {
+            case `*TEXT`:
+              windowTitle.value = parts[index + 1];
+              break;
+            case `*COLOR`:
+              windowTitle.keywords.push({
+                name: `COLOR`,
+                value: parts[index + 1]
+              });
+            case `*DSPATR`:
+              windowTitle.keywords.push({
+                name: `DSPATR`,
+                value: parts[index + 1]
+              });
+              break;
+
+            case `*CENTER`:
+            case `*LEFT`:
+            case `*RIGHT`:
+              xPositionValue = part.substring(1).toLowerCase();
+              break;
+
+            case `*TOP`:
+            case `*BOTTOM`:
+              yPositionValue = part.substring(1).toLowerCase();
+              break;
+            }
+          });
+
+          const txtLength = windowTitle.value.length;
+
+          const yPosition = (window.baseY) + (yPositionValue === `top` ? 0 : window.baseHeight);
+          let xPosition = (window.baseX + 1);
+
+          switch (xPositionValue) {
+          case `center`:
+            xPosition = (window.baseX + 1) + Math.floor((window.baseWidth / 2) - (txtLength / 2));
+            break;
+          case `right`:
+            xPosition = (window.baseX + 1) + window.baseWidth - txtLength;
+            break;
+          case `left`:
+            xPosition = (window.baseX + 1);
+            break;
+          }
+
+          windowTitle.position = {
+            x: xPosition,
+            y: yPosition
+          };
+
+        }
+
       }
     }
 
@@ -123,6 +198,13 @@ module.exports = class Render {
     }
 
     let body = `<div id="container">`;
+
+    if (windowTitle) {
+      const windowContent = Render.getContent(windowTitle);
+
+      css += windowContent.css;
+      body += windowContent.body;
+    }
 
     if (window) {
       body += `<div id="window">`;
@@ -194,7 +276,7 @@ module.exports = class Render {
               field.name = `${field.name}_${row}`;
               const content = Render.getContent(field);
               css += content.css;
-              body += content.html;
+              body += content.body;
               
               field.position.y += linesPerItem;
             });
@@ -210,7 +292,7 @@ module.exports = class Render {
       fields.forEach(field => {
         const content = Render.getContent(field);
         css += content.css;
-        body += content.html;
+        body += content.body;
       });
 
     } else {
@@ -247,8 +329,6 @@ module.exports = class Render {
       let css = `#${name} {`;
 
       const keywords = field.keywords;
-
-      let seperator = ``;
 
       keywords.forEach(keyword => {
         const key = keyword.name;
@@ -304,7 +384,7 @@ module.exports = class Render {
         }
       });
 
-      const length = field.length > 0 ? field.length : field.value.length;
+      const length = field.length > 0 && field.value.length < field.length ? field.length : field.value.length;
       const value = field.value
         .replace(/ /g, `&nbsp;`)
         .replace(new RegExp(`''`, `g`), `'`);
@@ -346,14 +426,48 @@ module.exports = class Render {
 
       return {
         css,
-        html: body
+        body
       };
 
     } else {
       return {
         css: ``,
-        html: ``
+        body: ``
       }
     }
+  }
+
+  /**
+   * @param {string} string 
+   * @returns {string[]}
+   */
+  static parseParms(string) {
+    let items = [];
+    let inString = false;
+    let current = ``;
+
+    for (let i = 0; i < string.length; i++) {
+      switch (string[i]) {
+      case `'`:
+        inString = !inString;
+        break;
+      case ` `:
+        if (inString) current += string[i];
+        else {
+          items.push(current);
+          current = ``;
+        }
+        break;
+      default:
+        current += string[i];
+        break;
+      }
+    }
+
+    if (current.trim().length > 0) {
+      items.push(current.trim());
+    }
+    
+    return items;
   }
 }
