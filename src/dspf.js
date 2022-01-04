@@ -273,6 +273,8 @@ class RecordInfo {
     };
     
     this.isWindow = false;
+    /** @type {string} */
+    this.windowReference = undefined;
     this.windowSize = {
       y: 0,
       x: 0,
@@ -297,13 +299,23 @@ class RecordInfo {
       case "WINDOW":
         this.isWindow = true;
         let points = keyword.value.split(' ');
-        //WINDOW (STARTY STARTX SIZEY SIZEX)
-        this.windowSize = {
-          y: Number(points[0]),
-          x: Number(points[1]),
-          width: Number(points[3]),
-          height: Number(points[2])
-        };
+
+        switch (points.length) {
+        case 4:
+          //WINDOW (STARTY STARTX SIZEY SIZEX)
+          this.windowSize = {
+            y: Number(points[0]),
+            x: Number(points[1]),
+            width: Number(points[3]),
+            height: Number(points[2])
+          };
+          break;
+        case 1:
+          //WINDOW (REF)
+          this.windowReference = points[0];
+          break;
+        }
+
         break;
       }
     });
