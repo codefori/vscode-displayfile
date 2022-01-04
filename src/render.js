@@ -40,10 +40,14 @@ module.exports = class Render {
    * @param {string} format 
    */
   getHTML(format) {
+    const globalFormat = this.display.formats.find(currentFormat => currentFormat.name === `GLOBAL`);
+
     let size = {
       width: 880,
       height: 480
     };
+
+    let parts;
 
     /** @type {{baseX: number, baseY: number, baseWidth: number, baseHeight: number, x: number, y: number, width: number, height: number, color?: string}} */
     let window;
@@ -56,7 +60,24 @@ module.exports = class Render {
     if (format) {
       topMostFormat = this.display.formats.find(currentFormat => currentFormat.name === format);
     } else {
-      topMostFormat = this.display.formats.find(currentFormat => currentFormat.name === `GLOBAL`);
+      topMostFormat = globalFormat;
+    }
+
+    if (globalFormat) {
+      const displaySize = globalFormat.keywords.find(keyword => keyword.name === `DSPSIZ`);
+
+      if (displaySize) {
+        parts = Render.parseParms(displaySize.value);
+
+        if (parts.length >= 2) {
+          const [height, width] = parts;
+
+          size = {
+            width: Number(width) * 11,
+            height: Number(height) * 20
+          };
+        }
+      }
     }
 
     if (topMostFormat) {
@@ -72,8 +93,6 @@ module.exports = class Render {
           width: width * 11,
           height: (height-1) * 20
         };
-
-        let parts;
 
         const borderInfo = topMostFormat.keywords.find(keyword => keyword.name === `WDWBORDER`);
         if (borderInfo) {
