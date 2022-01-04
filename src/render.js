@@ -332,6 +332,7 @@ module.exports = class Render {
         .replace(new RegExp(`0`, `g`), `ZERO`)
         .replace(new RegExp(`#`, `g`), `HASH`)
         .replace(new RegExp(`@`, `g`), `HASH`)
+        .replace(new RegExp(`\\$`, `g`), `DOLLAR`)
         .replace(new RegExp(`_`, `g`), `US`)
 
       let css = `#${htmlName} {`;
