@@ -2,7 +2,7 @@
 	"name": "vscode-displayfile",
 	"displayName": "vscode-displayfile",
 	"description": "Preview IBM i display files",
-	"version": "0.0.5",
+	"version": "0.0.6",
 	"publisher": "halcyontechltd",
 	"author": {
 		"name": "Halcyon-Tech, Liam Allan"
