@@ -129,6 +129,14 @@ module.exports = class Render {
             }
           });
 
+          // If no color is found, the default is blue.
+          if (!windowTitle.keywords.find(keyword => keyword.name === `COLOR`)) {
+            windowTitle.keywords.push({
+              name: `COLOR`,
+              value: `BLU`
+            });
+          }
+
           const txtLength = windowTitle.value.length;
 
           const yPosition = (window.baseY) + (yPositionValue === `top` ? 0 : window.baseHeight);
