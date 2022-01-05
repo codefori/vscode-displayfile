@@ -247,7 +247,7 @@ module.exports = class Render {
           `  height: ${windowConfig.height}px;`,
           `  top: ${windowConfig.y}px;`,
           `  left: ${windowConfig.x}px;`,
-          `  border: solid ${windowColor} 2px;`,
+          `  border: solid ${windowColor} 5px;`,
           `}`,
         ].join(` `);
       }
@@ -432,6 +432,9 @@ module.exports = class Render {
               break;
             case `HI`:
               css += `font-weight: 900;`;
+              if (!keywords.find(keyword => keyword.name === `COLOR`)) {
+                css += `color: ${colors.WHT};`;
+              }
               break;
             case `BL`:
               css += `animation: blinker 1s step-start infinite;`;
