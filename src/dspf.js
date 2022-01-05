@@ -307,7 +307,7 @@ class RecordInfo {
             y: Number(points[0]) || 2,
             x: Number(points[1]) || 2,
             width: Number(points[3]),
-            height: Number(points[2]) + 1
+            height: Number(points[2])
           };
           break;
         case 1:
