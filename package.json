@@ -30,7 +30,13 @@
 				}
 			}
 		},
-		"commands": []
+		"commands": [
+			{
+				"command": "vscode-displayfile.changeInd",
+				"title": "Flip indicators",
+				"category": "Display File"
+			}
+		]
 	},
 	"extensionDependencies": [
 		"barrettotte.ibmi-languages"

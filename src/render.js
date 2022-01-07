@@ -31,9 +31,12 @@ const timeFormats = {
 };
 
 module.exports = class Render {
-  constructor(display) {
+  constructor(display, indicators) {
     /** @type {DisplayFile} */
     this.display = display;
+
+    /** @type {{[ind: number]: boolean}} */
+    this.indicators = indicators || {};
   }
 
   generate(format) {
@@ -176,12 +179,14 @@ module.exports = class Render {
             case `*COLOR`:
               windowTitle.keywords.push({
                 name: `COLOR`,
-                value: parts[index + 1]
+                value: parts[index + 1],
+                conditions: []
               });
             case `*DSPATR`:
               windowTitle.keywords.push({
                 name: `DSPATR`,
-                value: parts[index + 1]
+                value: parts[index + 1],
+                conditions: []
               });
               break;
 
@@ -202,7 +207,8 @@ module.exports = class Render {
           if (!windowTitle.keywords.find(keyword => keyword.name === `COLOR`)) {
             windowTitle.keywords.push({
               name: `COLOR`,
-              value: `BLU`
+              value: `BLU`,
+              conditions: []
             });
           }
 
@@ -253,7 +259,7 @@ module.exports = class Render {
       }
 
       if (windowTitle) {
-        const windowContent = Render.getContent(windowTitle);
+        const windowContent = this.getContent(windowTitle);
 
         css += windowContent.css;
         body += windowContent.body;
@@ -330,10 +336,20 @@ module.exports = class Render {
           
           for (let row = 0; row < rows; row++) {
             subfileFields.forEach(field => {
-              field.name = `${field.name}_${row}`;
-              const content = Render.getContent(field);
-              css += content.css;
-              body += content.body;
+              let canDisplay = true;
+
+              field.conditions.forEach(cond => {
+                if (this.indicators[cond.indicator] !== (cond.negate ? false : true)) {
+                  canDisplay = false;
+                }
+              })
+              
+              if (canDisplay) {
+                field.name = `${field.name}_${row}`;
+                const content = this.getContent(field);
+                css += content.css;
+                body += content.body;
+              }
               
               field.position.y += linesPerItem;
             });
@@ -347,9 +363,19 @@ module.exports = class Render {
 
       const fields = format.fields.filter(field => field.displayType !== `hidden`);
       fields.forEach(field => {
-        const content = Render.getContent(field);
-        css += content.css;
-        body += content.body;
+        let canDisplay = true;
+
+        field.conditions.forEach(cond => {
+          if (this.indicators[cond.indicator] !== (cond.negate ? false : true)) {
+            canDisplay = false;
+          }
+        })
+
+        if (canDisplay) {
+          const content = this.getContent(field);
+          css += content.css;
+          body += content.body;
+        }
       });
 
     } else {
@@ -365,7 +391,7 @@ module.exports = class Render {
   /**
    * @param {FieldInfo} field 
    */
-  static getContent(field) {
+  getContent(field) {
     if (field.displayType !== `hidden`) {
       // Hacky way to make names valid IDs
       const htmlName = field.name
@@ -389,6 +415,16 @@ module.exports = class Render {
       const keywords = field.keywords;
 
       keywords.forEach(keyword => {
+        let canDisplay = true;
+
+        keyword.conditions.forEach(cond => {
+          if (this.indicators[cond.indicator] !== (cond.negate ? false : true)) {
+            canDisplay = false;
+          }
+        })
+
+        if (!canDisplay) return;
+
         const key = keyword.name;
         switch (key) {
         case `COLOR`:

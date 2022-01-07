@@ -8,6 +8,8 @@ const { DisplayFile } = require(`./dspf`);
 const Render = require(`./render`);
 const Window = require(`./window`);
 
+const Indicators = require(`./indicators`);
+
 let renderTimeout;
 
 // this method is called when your extension is activated
@@ -21,6 +23,8 @@ function activate(context) {
   // Use the console to output diagnostic information (console.log) and errors (console.error)
   // This line of code will only be executed once when your extension is activated
   console.log('Congratulations, your extension "vscode-displayfile" is now active!');
+
+  Indicators.initialize();
 
   const lens = new lensProvider();
   
@@ -37,7 +41,7 @@ function activate(context) {
         const dspf = new DisplayFile();
         dspf.parse(sourceLines);
 
-        const render = new Render(dspf);
+        const render = new Render(dspf, Indicators.values);
 
         const html = render.generate(format);
 
@@ -47,6 +51,23 @@ function activate(context) {
       } catch (e) {
         console.log(e);
       }
+    }),
+
+    vscode.commands.registerCommand(`vscode-displayfile.changeInd`, async () => {
+      const inds = Object.keys(Indicators.values);
+
+      vscode.window.showQuickPick(inds.map((ind) => ({
+        label: `${ind} - ${Indicators.values[ind]}`,
+        value: ind
+      })), {
+        canPickMany: true,
+        placeHolder: `Chose which indicators to switch`
+      }).then(chosen => {
+        chosen.forEach(ind => {
+          const index = Number(ind.value);
+          Indicators.values[index] = !Indicators.values[index];
+        })
+      })
     }),
 
     vscode.window.onDidChangeTextEditorSelection((event) => {
@@ -70,7 +91,7 @@ function activate(context) {
               const dspf = new DisplayFile();
               dspf.parse(sourceLines);
   
-              const render = new Render(dspf);
+              const render = new Render(dspf, Indicators.values);
   
               const line = selection.start.line;
   

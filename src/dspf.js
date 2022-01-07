@@ -20,13 +20,14 @@ class DisplayFile {
   parse(lines) {
     let textCounter = 0;
     
-    let name, len, type, dec, inout, x, y, keywords;
+    let conditionals, name, len, type, dec, inout, x, y, keywords;
     
     lines.forEach((line, index) => {
       line = line.padEnd(80);
 
       if (line[6] === `*`) return;
       
+      conditionals = line.substring(6, 16).padEnd(10);
       name = line.substring(18, 28).trim();
       len = line.substring(29, 34).trim();
       type = line[34].toUpperCase();
@@ -109,7 +110,8 @@ class DisplayFile {
               this.currentField.type = `char`;
               this.currentField.keywords.push({
                 name: `DATE`,
-                value: undefined
+                value: undefined,
+                conditions: []
               });
               break;
             case `T`: //Time
@@ -117,7 +119,8 @@ class DisplayFile {
               this.currentField.type = `char`;
               this.currentField.keywords.push({
                 name: `TIME`,
-                value: undefined
+                value: undefined,
+                conditions: []
               });
               break;
             default:
@@ -125,7 +128,11 @@ class DisplayFile {
               break;
             }
             
-            this.HandleKeywords(keywords);
+            this.currentField.conditions.push(
+              ...DisplayFile.parseConditionals(conditionals)
+            )
+
+            this.HandleKeywords(keywords, conditionals);
           }
         }
         else
@@ -139,9 +146,13 @@ class DisplayFile {
               if (this.currentField.value == null) this.currentField.value = "";
               this.currentField.length = this.currentField.value.length;
               this.currentField.displayType = `const`;
+            
+              this.currentField.conditions.push(
+                ...DisplayFile.parseConditionals(conditionals)
+              )
             }
           }
-          this.HandleKeywords(keywords);
+          this.HandleKeywords(keywords, conditionals);
         }
         break;
       }
@@ -165,23 +176,62 @@ class DisplayFile {
   
   /**
   * @param {string} keywords 
+  * @param {string} [conditionals]
   * @returns 
   */
-  HandleKeywords(keywords) {
-    if (keywords.length === 0) return;
+  HandleKeywords(keywords, conditionals = ``) {
+    let insertIndex;
 
     if (this.currentField) {
-      this.currentField.keywordStrings.push(keywords);
+      insertIndex = this.currentField.keywordStrings.keywordLines.push(keywords);
+      this.currentField.keywordStrings.conditionalLines[insertIndex] = conditionals;
     } else {
       this.currentRecord.keywordStrings.push(keywords);
     }
+
+
   }
 
-  /** @param {string[]} keywordStrings */
-  static parseKeywords(keywordStrings) {
+  static parseConditionals(conditionColumns) {
+    if (conditionColumns.trim() === "") return [];
+
+    /** @type {Conditional[]} */
+    let conditionals = [];
+
+    //TODO: something with condition
+    //const condition = conditionColumns.substring(0, 1); //A (and) or O (or)
+
+    let current = "";
+    let negate = false;
+    let indicator = 0;
+
+    let cIndex = 1;
+
+    while (cIndex <= 7) {
+      current = conditionColumns.substring(cIndex, cIndex + 3);
+
+      if (current.trim() !== "") {
+        negate = (conditionColumns.substring(cIndex, cIndex + 1) == "N");
+        indicator = Number(conditionColumns.substring(cIndex+1, cIndex+3));
+
+        conditionals.push(new Conditional(indicator, negate));
+      }
+        
+      cIndex += 3;
+    }
+
+    return conditionals;
+  }
+
+  /** 
+   * @param {string[]} keywordStrings 
+   * @param {{[line: number]: string}} [conditionalStrings]
+   * */
+  static parseKeywords(keywordStrings, conditionalStrings) {
     let result = {
       value: ``,
-      keywords: []
+      keywords: [],
+      conditions: []
     };
 
     let inString = false;
@@ -197,6 +247,7 @@ class DisplayFile {
         }
   
         result.value = keywordString;
+        value += `!`;
         return;
       }
   
@@ -214,7 +265,11 @@ class DisplayFile {
       } else {
         value += keywordString + ` `;
       }
+
+      value += `!`;
     });
+
+    let conditionalLine = 1;
   
     if (value.length > 0) {
       value += ` `;
@@ -225,6 +280,13 @@ class DisplayFile {
   
       for (let i = 0; i < value.length; i++) {
         switch (value[i]) {
+        case `!`:
+          if (inBrakcets > 0) {
+            innerValue += value[i];
+          } else {
+            conditionalLine += 1;
+          }
+          break;
         case `(`:
           inBrakcets++;
           break;
@@ -236,9 +298,12 @@ class DisplayFile {
             innerValue += value[i];
           } else {
             if (word.length > 0) {
+              let conditionals = conditionalStrings ? conditionalStrings[conditionalLine] : undefined;
+
               result.keywords.push({
                 name: word.toUpperCase(),
-                value: innerValue.length > 0 ? innerValue : undefined
+                value: innerValue.length > 0 ? innerValue : undefined,
+                conditions: conditionals ? DisplayFile.parseConditionals(conditionals) : []
               });
   
               word = ``;
@@ -344,19 +409,36 @@ class FieldInfo {
       y: 0
     };
 
-    /** @type {string[]} */
-    this.keywordStrings = [];
+    /** @type {{keywordLines: string[], conditionalLines: {[lineIndex: number]: string}}} */
+    this.keywordStrings = {
+      keywordLines: [],
+      conditionalLines: {}
+    };
 
-    /** @type {{name: string, value: string}[]} */
+    /** @type {Conditional[]} */
+    this.conditions = [];
+
+    /** @type {{name: string, value: string, conditions: Conditional[]}[]} */
     this.keywords = [];
   }
 
   handleKeywords() {
-    const data = DisplayFile.parseKeywords(this.keywordStrings);
+    const data = DisplayFile.parseKeywords(this.keywordStrings.keywordLines, this.keywordStrings.conditionalLines);
 
     this.keywords.push(...data.keywords);
 
     if (data.value.length > 0) this.value = data.value;
+  }
+}
+
+class Conditional {
+  /**
+   * @param {number} ind 
+   * @param {boolean} [negate]
+   */
+  constructor(ind, negate = false) {
+    this.indicator = ind;
+    this.negate = negate;
   }
 }
 
