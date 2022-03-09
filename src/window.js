@@ -6,7 +6,7 @@ let panel;
 module.exports = class {
   static create() {
     if (panel) {
-      panel.reveal
+      panel.reveal();
     } else {
       panel = vscode.window.createWebviewPanel(
         `displayFile`,

@@ -15,7 +15,8 @@
 		"Other"
 	],
 	"activationEvents": [
-		"onLanguage:dds.dspf"
+		"onLanguage:dds.dspf",
+		"onLanguage:dds.prtf"
 	],
 	"main": "./src/extension.js",
 	"contributes": {

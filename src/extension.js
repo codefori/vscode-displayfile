@@ -34,14 +34,14 @@ function activate(context) {
   // Now provide the implementation of the command with  registerCommand
   // The commandId parameter must match the command field in package.json
   context.subscriptions.push(
-    vscode.commands.registerCommand('vscode-displayfile.render', function (sourceLines, format) {
+    vscode.commands.registerCommand('vscode-displayfile.render', function (sourceLines, format, type) {
       // The code you place here will be executed every time your command is executed
 
       try {
         const dspf = new DisplayFile();
         dspf.parse(sourceLines);
 
-        const render = new Render(dspf, Indicators.values);
+        const render = new Render(dspf, Indicators.values, type);
 
         const html = render.generate(format);
 
@@ -80,18 +80,19 @@ function activate(context) {
 
       renderTimeout = setTimeout(() => {
         if (Window.isActive()) {
-          if (editor) {
+          const activeEditor = vscode.window.activeTextEditor;
+          if (editor && activeEditor) {
             const document = editor.document;
             const id = document.languageId;
   
-            if (id === `dds.dspf`) {
+            if ([`dds.dspf`, `dds.prtf`].includes(id)) {
               const eol = document.eol === vscode.EndOfLine.CRLF ? `\r\n` : `\n`;
               const sourceLines = document.getText().split(eol);
   
               const dspf = new DisplayFile();
               dspf.parse(sourceLines);
   
-              const render = new Render(dspf, Indicators.values);
+              const render = new Render(dspf, Indicators.values, id);
   
               const line = selection.start.line;
   
@@ -112,6 +113,12 @@ function activate(context) {
     vscode.languages.registerCodeLensProvider(
       {
         language: `dds.dspf`,
+      },
+      lens
+    ),
+    vscode.languages.registerCodeLensProvider(
+      {
+        language: `dds.prtf`,
       },
       lens
     ),

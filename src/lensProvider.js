@@ -41,7 +41,7 @@ module.exports = class lensProvider {
               {
                 command: `vscode-displayfile.render`,
                 title: `Preview ${name}`,
-                arguments: [lines, name]
+                arguments: [lines, name, document.languageId]
               }
             ));
           }
@@ -58,7 +58,7 @@ module.exports = class lensProvider {
       {
         command: `vscode-displayfile.render`,
         title: `Preview all`,
-        arguments: [lines]
+        arguments: [lines, undefined, document.languageId]
       }
     ));
 

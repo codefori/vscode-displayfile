@@ -8,7 +8,8 @@ const colors = {
   GRN: `green`,
   TRQ: `turquoise`,
   YLW: `yellow`,
-  PNK: `pink`
+  PNK: `pink`,
+  BLK: `black`,
 };
 
 const dateFormats = {
@@ -31,39 +32,61 @@ const timeFormats = {
 };
 
 module.exports = class Render {
-  constructor(display, indicators) {
+  constructor(display, indicators, type) {
     /** @type {DisplayFile} */
     this.display = display;
 
     /** @type {{[ind: number]: boolean}} */
     this.indicators = indicators || {};
+
+    this.printerFileLine = 0;
+
+    /** @type {"dds.dspf"|"dds.prtf"} */
+    this.type = type;
   }
 
   generate(format) {
-    let size = {
-      width: 880,
-      height: 480
-    };
+    let props = {
+      size: {
+        width: 880,
+        height: 480
+      },
+      backgroundColor: colors.BLK,
+      textColor: colors.GRN,
+    }
 
-    const globalFormat = this.display.formats.find(currentFormat => currentFormat.name === `GLOBAL`);
+    switch (this.type) {
+    case `dds.dspf`:
+      const globalFormat = this.display.formats.find(currentFormat => currentFormat.name === `GLOBAL`);
 
-    let parts;
-
-    if (globalFormat) {
-      const displaySize = globalFormat.keywords.find(keyword => keyword.name === `DSPSIZ`);
-
-      if (displaySize) {
-        parts = Render.parseParms(displaySize.value);
-
-        if (parts.length >= 2) {
-          const [height, width] = parts;
-
-          size = {
-            width: Number(width) * 11,
-            height: Number(height) * 20
-          };
+      let parts;
+    
+      if (globalFormat) {
+        const displaySize = globalFormat.keywords.find(keyword => keyword.name === `DSPSIZ`);
+    
+        if (displaySize) {
+          parts = Render.parseParms(displaySize.value);
+    
+          if (parts.length >= 2) {
+            const [height, width] = parts;
+    
+            props.size = {
+              width: Number(width) * 11,
+              height: Number(height) * 20
+            };
+          }
         }
       }
+      break;
+    case `dds.prtf`:
+      props.size = {
+        width: 132 * 11,
+        height: 66 * 20
+      };
+
+      props.backgroundColor = `#FFFFE8`;
+      props.textColor = colors.BLK;
+      break;
     }
 
     let css = [
@@ -71,16 +94,16 @@ module.exports = class Render {
       `  font-family: monospace;`,
       `  font-size: 18px;`,
       `  border: solid black 1px;`,
-      `  width: ${size.width}px;`,
-      `  height: ${size.height}px;`,
+      `  width: ${props.size.width}px;`,
+      `  height: ${props.size.height}px;`,
       `  position: absolute;`,
       `  --g: transparent calc(100% - 1px), #ebebeb 0;`,
       `  letter-spacing: 0.15px;`,
-      `  color: ${colors.GRN};`,
+      `  color: ${props.textColor};`,
       `  background:`,
       // `    linear-gradient(to right, var(--g)),`,
       // `    linear-gradient(to bottom, var(--g)), `,
-      `    black;`,
+      `    ${props.backgroundColor};`,
       `  background-size:`,
       `    11px 100%,`,
       `    100% 20px;`,
@@ -361,6 +384,30 @@ module.exports = class Render {
         }
       }
 
+      // Printer file keywords
+      let skipBefore = format.keywords.find(keyword => keyword.name === `SKIPB`);
+      let skipAfter = format.keywords.find(keyword => keyword.name === `SKIPA`);
+      let spaceBefore = format.keywords.find(keyword => keyword.name === `SPACEB`);
+      let spaceAfter = format.keywords.find(keyword => keyword.name === `SPACEA`);
+
+      if (this.printerFileLine === 0) this.printerFileLine += 1;
+
+      if (skipBefore) {
+        this.printerFileLine = Number(skipBefore.value);
+      }
+
+      if (spaceBefore) {
+        this.printerFileLine += Number(spaceBefore.value);
+      }
+
+      if (spaceAfter) {
+        this.printerFileLine += Number(spaceAfter.value);
+      }
+
+      if (skipAfter) {
+        this.printerFileLine += Number(skipAfter.value);
+      }
+
       const fields = format.fields.filter(field => field.displayType !== `hidden`);
       fields.forEach(field => {
         let canDisplay = true;
@@ -369,12 +416,26 @@ module.exports = class Render {
           if (this.indicators[cond.indicator] !== (cond.negate ? false : true)) {
             canDisplay = false;
           }
-        })
+        });
+
+        spaceBefore = field.keywords.find(keyword => keyword.name === `SPACEB`);
+        spaceAfter = field.keywords.find(keyword => keyword.name === `SPACEA`);
+
+        if (spaceBefore) {
+          this.printerFileLine += Number(spaceBefore.value);
+        }
+
+        if (field.position.y === 0)
+          field.position.y += this.printerFileLine;
 
         if (canDisplay) {
           const content = this.getContent(field);
           css += content.css;
           body += content.body;
+        }
+
+        if (spaceAfter) {
+          this.printerFileLine += Number(spaceAfter.value);
         }
       });
 

@@ -61,6 +61,7 @@ class DisplayFile {
         
       case ' ':
         if ((x !== "" && y !== "") || inout === `H`) {
+          // From a regular display file
           if (this.currentField !== null) {
             this.currentField.handleKeywords();
             this.currentFields.push(this.currentField);
@@ -70,6 +71,18 @@ class DisplayFile {
           this.currentField.position = {
             x: Number(x),
             y: Number(y)
+          };
+        } else if (x !== "" && y === "") {
+          // From a printer file with no Y position
+          if (this.currentField !== null) {
+            this.currentField.handleKeywords();
+            this.currentFields.push(this.currentField);
+          }
+          
+          this.currentField = new FieldInfo();
+          this.currentField.position = {
+            x: Number(x),
+            y: 0
           };
         }
         
