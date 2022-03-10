@@ -529,6 +529,12 @@ module.exports = class Render {
             }
           }
           break;
+        case `UNDERLINE`:
+          css += `text-decoration: underline;`;
+          break;
+        case `HIGHLIGHT`:
+          css += `font-weight: 900;`;
+          break;
         case `DSPATR`:
           keyword.value.split(` `).forEach(value => {
             switch (value) {
