@@ -1,12 +1,23 @@
 {
 	"name": "vscode-displayfile",
-	"displayName": "vscode-displayfile",
-	"description": "Preview IBM i display files",
+	"displayName": "IBM i Renderer",
+	"description": "Preview IBM i display & printer files",
 	"version": "0.0.8",
 	"publisher": "halcyontechltd",
 	"author": {
 		"name": "Halcyon-Tech, Liam Allan"
 	},
+	"keywords": [
+		"ibmi",
+		"rpgle",
+		"cobol",
+		"ile",
+		"iseries",
+		"as400",
+		"printer",
+		"5250"
+	],
+	"preview": true,
 	"repository": "https://github.com/halcyon-tech/vscode-displayfile",
 	"engines": {
 		"vscode": "^1.63.0"
@@ -14,6 +25,7 @@
 	"categories": [
 		"Other"
 	],
+	"icon": "icon.png",
 	"activationEvents": [
 		"onLanguage:dds.dspf",
 		"onLanguage:dds.prtf"
