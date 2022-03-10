@@ -47,6 +47,7 @@ module.exports = class Render {
 
   generate(format) {
     let props = {
+      zoom: `0.9`,
       size: {
         width: 880,
         height: 480
@@ -79,6 +80,7 @@ module.exports = class Render {
       }
       break;
     case `dds.prtf`:
+      props.zoom = `0.7`;
       props.size = {
         width: 132 * 11,
         height: 66 * 20
@@ -122,7 +124,7 @@ module.exports = class Render {
     body += content.body;
 
     return [
-      `<html>`,
+      `<html style="zoom: ${props.zoom};">`,
       `<style>${css}</style>`,
       `<body>${body}</body>`,
       `</html>`
@@ -488,6 +490,9 @@ module.exports = class Render {
 
         const key = keyword.name;
         switch (key) {
+        case `PAGNBR`:
+          field.value = `####`
+          break;
         case `COLOR`:
           css += `color: ${colors[keyword.value]};`
           break;
