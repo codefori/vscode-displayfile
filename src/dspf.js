@@ -78,10 +78,19 @@ class DisplayFile {
             this.currentField.handleKeywords();
             this.currentFields.push(this.currentField);
           }
+
+          let totalX = Number(x);
+          if (x.startsWith(`+`)) {
+            totalX = this.currentFields[this.currentFields.length - 1].position.x + Number(x.substring(1));
+
+            if (this.currentFields[this.currentFields.length - 1].value) {
+              totalX += this.currentFields[this.currentFields.length - 1].value.length;
+            }
+          }
           
           this.currentField = new FieldInfo();
           this.currentField.position = {
-            x: Number(x),
+            x: totalX,
             y: 0
           };
         }
