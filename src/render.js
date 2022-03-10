@@ -47,6 +47,8 @@ module.exports = class Render {
 
   generate(format) {
     let props = {
+      borderSize: '0px',
+      shadow: false,
       zoom: `0.9`,
       size: {
         width: 880,
@@ -86,29 +88,30 @@ module.exports = class Render {
         height: 66 * 20
       };
 
-      props.backgroundColor = `#FFFFE8`;
+      props.shadow = true;
+      props.borderSize = `3px`;
+      props.backgroundColor = `#fffdf0`;
       props.textColor = colors.BLK;
       break;
     }
 
     let css = [
       `#container {`,
+      `  margin-top: 10px;`,
       `  font-family: monospace;`,
       `  font-size: 18px;`,
-      `  border: solid black 1px;`,
+      `  border: solid black ${props.borderSize};`,
       `  width: ${props.size.width}px;`,
       `  height: ${props.size.height}px;`,
       `  position: absolute;`,
       `  --g: transparent calc(100% - 1px), #ebebeb 0;`,
       `  letter-spacing: 0.15px;`,
       `  color: ${props.textColor};`,
-      `  background:`,
-      // `    linear-gradient(to right, var(--g)),`,
-      // `    linear-gradient(to bottom, var(--g)), `,
-      `    ${props.backgroundColor};`,
+      `  background: ${props.backgroundColor};`,
       `  background-size:`,
       `    11px 100%,`,
       `    100% 20px;`,
+      (props.shadow ? `box-shadow: 5px 5px 5px grey;` : ``),
       `}`,
       `@keyframes blinker {`,
       `  50% {`,
