@@ -125,6 +125,7 @@ module.exports = class Render {
     const content = this.getHTML(format);
     css += content.css;
     body += content.body;
+    body += `</div>`;
 
     return [
       `<html style="zoom: ${props.zoom};">`,
@@ -580,15 +581,12 @@ module.exports = class Render {
         break;
       }
 
-      let hoverText;
+      let displayName = (field.displayType === `const` ?
+        `Constant` :
+        (field.name.includes(`_0`) ? field.name.substring(0, field.name.indexOf(`_0`)) : field.name))
 
-      if (field.displayType !== `const`) {
-        // Remove unique subfield names
-        const displayName = field.name.includes(`_0`) ? field.name.substring(0, field.name.indexOf(`_0`)) : field.name;
-
-        const textKeyword = keywords.find(keyword => keyword.name === `TEXT`);
-        hoverText = `${displayName} ${textKeyword ? textKeyword.value : ``}`.trim();
-      }
+      const textKeyword = keywords.find(keyword => keyword.name === `TEXT`);
+      const hoverText = `${displayName} (${field.position.y}, ${field.position.x}) ${textKeyword ? textKeyword.value : ``}`.trim();
 
       let body = `<div id="${htmlName}">${hoverText ? `<div id="${htmlName}_tooltip">${hoverText}</div>` : ``}${value.padEnd(length, padString)}</div>`
 
