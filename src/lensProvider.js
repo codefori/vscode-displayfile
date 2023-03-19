@@ -29,22 +29,20 @@ module.exports = class lensProvider {
       line = line.padEnd(30);
       // Not a comment
       if (line[6] !== `*`) {
-        if (line[5].toUpperCase() === `A`) {
-          // Is a record format definition
-          if (line[16].toUpperCase() === `R`) {
-            const name = line.substring(18, 28).trim();
+        // Is a record format definition
+        if (line[16].toUpperCase() === `R`) {
+          const name = line.substring(18, 28).trim();
 
-            codeLens.push(new vscode.CodeLens(
-              new vscode.Range(
-                index, 0, index, 0
-              ),
-              {
-                command: `vscode-displayfile.render`,
-                title: `Preview ${name}`,
-                arguments: [lines, name, document.languageId]
-              }
-            ));
-          }
+          codeLens.push(new vscode.CodeLens(
+            new vscode.Range(
+              index, 0, index, 0
+            ),
+            {
+              command: `vscode-displayfile.render`,
+              title: `Preview ${name}`,
+              arguments: [lines, name, document.languageId]
+            }
+          ));
         }
       }
     });
