@@ -256,7 +256,7 @@ class DisplayFile {
       conditions: []
     };
 
-    let value = keywordStrings.join(` !`) + ` !`;
+    let value = keywordStrings.join(`!`) + `!`;
     let conditionalLine = 1;
   
     if (value.length > 0) {
@@ -273,14 +273,6 @@ class DisplayFile {
         case `-`:
           if (!inString) {
             innerValue += value[i];
-          }
-          break;
-          
-        case `!`:
-          if (inBrakcets > 0 && !inString) {
-            innerValue += value[i];
-          } else {
-            conditionalLine += 1;
           }
           break;
 
@@ -302,6 +294,8 @@ class DisplayFile {
         case `)`:
           inBrakcets--;
           break;
+
+        case `!`:
         case ` `:
           if (inBrakcets > 0 || inString) {
             innerValue += value[i];
@@ -319,6 +313,8 @@ class DisplayFile {
               innerValue = ``;
             }
           }
+
+          if (value[i] === `!`) conditionalLine += 1;
           break;
         default:
           if (inBrakcets > 0 || inString) 
