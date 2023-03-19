@@ -35,7 +35,7 @@ class DisplayFile {
       inout = line[37].toUpperCase();
       y = line.substring(38, 41).trim();
       x = line.substring(41, 44).trim();
-      keywords = line.substring(44).trim();
+      keywords = line.substring(44).trimEnd();
       
       switch (line[16]) {
       case 'R':
@@ -256,41 +256,9 @@ class DisplayFile {
       conditions: []
     };
 
-    let inString = false;
-    let value = ``;
-  
-    keywordStrings.forEach(keywordString => {
-      if (keywordString.startsWith(`'`)) {
-        inString = true;
-        keywordString = keywordString.substring(1);
-  
-        if (keywordString.endsWith(`'`) || keywordString.endsWith(`-`)) {
-          keywordString = keywordString.substring(0, keywordString.length - 1);
-        }
-  
-        result.value = keywordString;
-        value += `!`;
-        return;
-      }
-  
-      if (keywordString.endsWith('-')) {
-        if (inString)
-          result.value += keywordString.substring(0, keywordString.length - 1);
-        else
-          value += keywordString.substring(0, keywordString.length - 1);
-      } else 
-      if (keywordString.endsWith(`'`)) {
-        if (inString) {
-          result.value += keywordString.substring(0, keywordString.length - 1);
-          inString = false; 
-        }
-      } else {
-        value += keywordString + ` `;
-      }
+    const newLineMark = `~`;
 
-      value += `!`;
-    });
-
+    let value = keywordStrings.join(newLineMark) + newLineMark;
     let conditionalLine = 1;
   
     if (value.length > 0) {
@@ -299,25 +267,45 @@ class DisplayFile {
       let inBrakcets = 0;
       let word = ``;
       let innerValue = ``;
+      let inString = false;
   
       for (let i = 0; i < value.length; i++) {
         switch (value[i]) {
-        case `!`:
+        case `+`:
+        case `-`:
+          if (!inString) {
+            innerValue += value[i];
+          }
+          break;
+
+        case `'`:
           if (inBrakcets > 0) {
             innerValue += value[i];
           } else {
-            conditionalLine += 1;
+            if (inString) {
+              inString = false;
+
+              result.value = innerValue;
+              innerValue = ``;
+            } else {
+              inString = true;
+            }
           }
           break;
+
         case `(`:
           inBrakcets++;
           break;
         case `)`:
           inBrakcets--;
           break;
+
+        case newLineMark:
         case ` `:
-          if (inBrakcets > 0) {
-            innerValue += value[i];
+          if (inBrakcets > 0 || inString) {
+            if (value[i] !== newLineMark) {
+              innerValue += value[i];
+            }
           } else {
             if (word.length > 0) {
               let conditionals = conditionalStrings ? conditionalStrings[conditionalLine] : undefined;
@@ -332,9 +320,11 @@ class DisplayFile {
               innerValue = ``;
             }
           }
+
+          if (value[i] === newLineMark) conditionalLine += 1;
           break;
         default:
-          if (inBrakcets > 0) 
+          if (inBrakcets > 0 || inString) 
             innerValue += value[i];
           else
             word += value[i];
