@@ -314,8 +314,9 @@ module.exports = class Render {
 
     } else {
       this.display.formats.forEach(currentFormat => {
-        if (currentFormat.keywords.find(key => key.name === `SFL`)) {
-          // All but subfiles
+        if (currentFormat.keywords.find(key => [`SFL`, `WINDOW`].includes(key.name))) {
+          // All but subfiles and windows
+          // SFL gets written by SFLCTL
           return;
         }
 
