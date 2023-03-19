@@ -56,8 +56,7 @@
 	],
 	"scripts": {
 		"lint": "eslint .",
-		"pretest": "npm run lint",
-		"test": "node ./test/runTest.js",
+		"test": "node ./test",
 		"package": "vsce package"
 	},
 	"devDependencies": {
