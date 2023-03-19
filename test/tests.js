@@ -1,8 +1,9 @@
 const assert = require("assert");
 const { DisplayFile } = require("../src/dspf");
 const depts = require("./file/depts");
+const replloadfm = require("./file/replloadfm");
 
-exports.testa = () => {
+exports.simple = () => {
   const file = new DisplayFile();
   file.parse(depts.lines);
 
@@ -92,4 +93,46 @@ exports.testa = () => {
   assert.deepStrictEqual(sameLineField.keywords, [
     { name: `COLOR`, value: `BLU`, conditions: [] },
   ]);
+}
+
+exports.strings = () => {
+  const file = new DisplayFile();
+  file.parse(replloadfm.lines);
+
+  assert.strictEqual(file.formats.length, 7);
+
+  // Verify parsing keywords with strings in
+  const snippetsFormat = file.formats[3];
+  assert.strictEqual(snippetsFormat.name, `SNIPPETS`);
+
+  const CF03 = snippetsFormat.keywords.find(keyword => keyword.name === `CF03`);
+  assert.notStrictEqual(CF03, undefined);
+  assert.strictEqual(CF03.value, `03 'Exit'`);
+
+  // Verify strings over many lines
+
+  const noRecordsFormat = file.formats[4];
+  assert.strictEqual(noRecordsFormat.name, `NORECORDS`);
+  const textField = noRecordsFormat.fields[0];
+  assert.strictEqual(textField.name, `TEXT4`);
+  assert.deepStrictEqual(textField.position, {x: 5, y: 4});
+  assert.strictEqual(textField.value, `no snippets found for the current search criteria`);
+
+  // Second verification, with space at the start
+
+  const confirmWindowFormat = file.formats[6];
+  assert.strictEqual(confirmWindowFormat.name, `CONFIRM`);
+  const longTextField = confirmWindowFormat.fields[2];
+  assert.strictEqual(longTextField.value, `F10=Confirm                             F12=Cancel`)
+}
+
+exports.window = () => {
+  const file = new DisplayFile();
+  file.parse(replloadfm.lines);
+
+  const confirmWindowFormat = file.formats[6];
+  assert.strictEqual(confirmWindowFormat.name, `CONFIRM`);
+  assert.deepStrictEqual(confirmWindowFormat.windowSize, {
+    height: 6, width: 54, x: 6, y: 6
+  });
 }
