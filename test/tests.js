@@ -1,7 +1,9 @@
 const assert = require("assert");
 const { DisplayFile } = require("../src/dspf");
+
 const depts = require("./file/depts");
 const replloadfm = require("./file/replloadfm");
+const issue1149 = require(`./file/issue1149`);
 
 exports.simple = () => {
   const file = new DisplayFile();
@@ -135,4 +137,18 @@ exports.window = () => {
   assert.deepStrictEqual(confirmWindowFormat.windowSize, {
     height: 6, width: 54, x: 6, y: 6
   });
+}
+
+exports.issue1149 = () => {
+  const file = new DisplayFile();
+  file.parse(issue1149.lines);
+
+  const windowFormat = file.formats[1];
+  assert.strictEqual(windowFormat.name, `HELP`);
+  assert.deepStrictEqual(windowFormat.windowSize, {
+    height: 10, width: 70, x: 2, y: 10
+  });
+
+  const windowTitle = windowFormat.keywords.find(keyword => keyword.name === `WDWTITLE`);
+  assert.strictEqual(windowTitle.value, `*TEXT 'Print accounts by store number for status type - Help' *COLOR WHT`);
 }

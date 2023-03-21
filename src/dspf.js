@@ -273,7 +273,7 @@ class DisplayFile {
         switch (value[i]) {
         case `+`:
         case `-`:
-          if (!inString) {
+          if (!inString && value[i+1] !== newLineMark) {
             innerValue += value[i];
           }
           break;
@@ -377,15 +377,41 @@ class RecordInfo {
         this.isWindow = true;
         let points = keyword.value.split(' ');
 
+
+        if (points.length >= 3 && points[0].toUpperCase() === `*DFT`) {
+          // WINDOW (*DFT Y X)
+          this.windowSize = {
+            y: 2,
+            x: 2,
+            width: Number(points[2]),
+            height: Number(points[1])
+          };
+        } else {
+          if (points.length === 1) {
+            // WINDOW (REF)
+            this.windowReference = points[0];
+
+          } else if (points.length >= 4) {
+            // WINDOW (*DFT SY SX Y X)
+            this.windowSize = {
+              y: Number(points[0]) || 2,
+              x: Number(points[1]) || 2,
+              width: Number(points[3]),
+              height: Number(points[2])
+            };
+          }
+        }
+
+        switch (points[0]) {
+          case `*DFT`:
+            break;
+          
+        }
+
         switch (points.length) {
         case 4:
           //WINDOW (STARTY STARTX SIZEY SIZEX)
-          this.windowSize = {
-            y: Number(points[0]) || 2,
-            x: Number(points[1]) || 2,
-            width: Number(points[3]),
-            height: Number(points[2])
-          };
+
           break;
         case 1:
           //WINDOW (REF)
