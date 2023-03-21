@@ -2,7 +2,7 @@
 	"name": "vscode-displayfile",
 	"displayName": "IBM i Renderer",
 	"description": "Preview IBM i display & printer files",
-	"version": "0.1.0",
+	"version": "0.1.1",
 	"publisher": "halcyontechltd",
 	"author": {
 		"name": "Halcyon-Tech, Liam Allan"
