@@ -294,10 +294,16 @@ class DisplayFile {
           break;
 
         case `(`:
-          inBrakcets++;
+          if (inString) 
+            innerValue += value[i];
+          else
+            inBrakcets++;
           break;
         case `)`:
-          inBrakcets--;
+          if (inString) 
+            innerValue += value[i];
+          else
+            inBrakcets--;
           break;
 
         case newLineMark:
