@@ -4,6 +4,7 @@ const { DisplayFile } = require("../src/dspf");
 const depts = require("./file/depts");
 const replloadfm = require("./file/replloadfm");
 const issue1149 = require(`./file/issue1149`);
+const newcases = require(`./file/new_cases`);
 
 exports.simple = () => {
   const file = new DisplayFile();
@@ -151,4 +152,20 @@ exports.issue1149 = () => {
 
   const windowTitle = windowFormat.keywords.find(keyword => keyword.name === `WDWTITLE`);
   assert.strictEqual(windowTitle.value, `*TEXT 'Print accounts by store number for status type - Help' *COLOR WHT`);
+}
+
+exports.additional_cases = () => {
+  const file = new DisplayFile();
+  file.parse(newcases.lines);
+
+  assert.strictEqual(file.formats.length, 2);
+
+  const record = file.formats[1];
+  assert.strictEqual(record.fields.length, 7);
+  assert.strictEqual(record.name, `TEST_REC`);
+
+  // Verify parsing character constants with brackets
+  const fieldWithBrackets = record.fields[0];
+  assert.strictEqual(fieldWithBrackets.displayType, `const`);
+  assert.strictEqual(fieldWithBrackets.value, `some text (detail)`);
 }
