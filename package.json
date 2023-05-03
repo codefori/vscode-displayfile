@@ -32,6 +32,12 @@
 	],
 	"main": "./src/extension.js",
 	"contributes": {
+		"snippets": [
+			{
+				"path": "./schemas/dspf.code-snippets",
+				"language": "dds.dspf"
+			}
+		],
 		"configuration": {
 			"title": "Display File",
 			"properties": {
