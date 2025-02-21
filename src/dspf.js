@@ -264,7 +264,7 @@ class DisplayFile {
     if (value.length > 0) {
       value += ` `;
         
-      let inBrakcets = 0;
+      let inBrackets = 0;
       let word = ``;
       let innerValue = ``;
       let inString = false;
@@ -273,13 +273,13 @@ class DisplayFile {
         switch (value[i]) {
         case `+`:
         case `-`:
-          if (!inString && value[i+1] !== newLineMark) {
+          if (value[i+1] !== newLineMark) {
             innerValue += value[i];
           }
           break;
 
         case `'`:
-          if (inBrakcets > 0) {
+          if (inBrackets > 0) {
             innerValue += value[i];
           } else {
             if (inString) {
@@ -294,15 +294,23 @@ class DisplayFile {
           break;
 
         case `(`:
-          inBrakcets++;
+          if (inString) {
+            innerValue += value[i];
+          } else {
+            inBrackets++;
+          }
           break;
         case `)`:
-          inBrakcets--;
+          if (inString) {
+            innerValue += value[i];
+          } else {
+            inBrackets--;
+          }
           break;
 
         case newLineMark:
         case ` `:
-          if (inBrakcets > 0 || inString) {
+          if (inBrackets > 0 || inString) {
             if (value[i] !== newLineMark) {
               innerValue += value[i];
             }
@@ -324,7 +332,7 @@ class DisplayFile {
           if (value[i] === newLineMark) conditionalLine += 1;
           break;
         default:
-          if (inBrakcets > 0 || inString) 
+          if (inBrackets > 0 || inString) 
             innerValue += value[i];
           else
             word += value[i];
