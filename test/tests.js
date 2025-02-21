@@ -152,6 +152,11 @@ exports.issue1149 = () => {
 
   const windowTitle = windowFormat.keywords.find(keyword => keyword.name === `WDWTITLE`);
   assert.strictEqual(windowTitle.value, `*TEXT 'Print accounts by store number for status type - Help' *COLOR WHT`);
+
+  const text4 = windowFormat.fields.find(field => field.name === `TEXT4`);
+  assert.ok(text4);
+  assert.strictEqual(text4.value, `taken a check from that account.  You can only select one status type`);
+  assert.deepStrictEqual(text4.position, {x: 2, y: 5});
 }
 
 exports.issue1382 = () => {
