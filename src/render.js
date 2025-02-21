@@ -558,6 +558,12 @@ module.exports = class Render {
         }
       });
 
+      const reffldKeyword = keywords.find(keyword => keyword.name === `REFFLD`);
+      if (field.length === 0 && reffldKeyword) {
+        field.length = 1;
+        var reffld = `REFFLD (${reffldKeyword.value})`;
+      }
+
       const length = field.length > 0 && field.value.length < field.length ? field.length : field.value.length;
       const value = field.value
         .replace(/ /g, `&nbsp;`)
@@ -587,8 +593,7 @@ module.exports = class Render {
         (field.name.includes(`_0`) ? field.name.substring(0, field.name.indexOf(`_0`)) : field.name))
 
       const textKeyword = keywords.find(keyword => keyword.name === `TEXT`);
-      const hoverText = `${displayName} (${field.position.y}, ${field.position.x}) ${textKeyword ? textKeyword.value : ``}`.trim();
-
+      const hoverText = `${displayName} (${field.position.y}, ${field.position.x}) ${textKeyword ? textKeyword.value : ``} ${reffld ? reffld : ``}`.trim();
       let body = `<div id="${htmlName}">${hoverText ? `<div id="${htmlName}_tooltip">${hoverText}</div>` : ``}${value.padEnd(length, padString)}</div>`
 
       css += [
