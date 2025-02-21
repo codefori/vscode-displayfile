@@ -4,6 +4,7 @@ const { DisplayFile } = require("../src/dspf");
 const depts = require("./file/depts");
 const replloadfm = require("./file/replloadfm");
 const issue1149 = require(`./file/issue1149`);
+const issue1382 = require(`./file/issue1382`);
 
 exports.simple = () => {
   const file = new DisplayFile();
@@ -151,4 +152,20 @@ exports.issue1149 = () => {
 
   const windowTitle = windowFormat.keywords.find(keyword => keyword.name === `WDWTITLE`);
   assert.strictEqual(windowTitle.value, `*TEXT 'Print accounts by store number for status type - Help' *COLOR WHT`);
+}
+
+exports.issue1382 = () => {
+  const file = new DisplayFile();
+  file.parse(issue1382.lines);
+
+  const screenFormat = file.formats[1];
+  assert.strictEqual(screenFormat.name, `SCRN2`);
+
+  const textField1 = screenFormat.fields[0];
+  assert.strictEqual(textField1.name, `TEXT1`);
+  assert.strictEqual(textField1.value, `This text containt parentheses (Y/N)`);
+
+  const textField2 = screenFormat.fields[1];
+  assert.strictEqual(textField2.name, `TEXT2`);
+  assert.strictEqual(textField2.value, `This text containt dashes -Y/N-`);
 }
