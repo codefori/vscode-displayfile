@@ -95,7 +95,7 @@ export class DisplayFile {
               x: totalX,
               y: 0
             };
-          } else if (name !== undefined && type !== "") {
+          } else if (name!=="" && name !== undefined) {
             // Some fields have no positions
             if (this.currentField) {
               this.currentField.handleKeywords();
