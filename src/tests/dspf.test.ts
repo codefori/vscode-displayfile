@@ -137,4 +137,50 @@ describe('DisplayFile tests', () => {
     expect(new Set(names).size).toBe(names.length);
   });
 
+  it("should parse field with type and attach keywords", () => {
+    const lines = [
+      "     A            FIELD1        10A",
+      "     A                                      TEXT('Customer Name')",
+      "     A                                      COLHDG('Cust' 'Name')"
+    ];
+
+    const file = new DisplayFile();
+    file.parse(lines);
+
+    const record = file.formats[0];
+    const field = record.fields[0];
+
+    expect(record.fields.length).toBe(1);
+    expect(field.name).toBe("FIELD1");
+    expect(field.type).toBe("A");
+    expect(field.length).toBe(10);
+    expect(field.keywords.length).toBe(2);
+    expect(field.keywords[0].name).toBe("TEXT");
+    expect(field.keywords[0].value).toBe("'Customer Name'");
+    expect(field.keywords[1].name).toBe("COLHDG");
+    expect(field.keywords[1].value).toBe("'Cust' 'Name'");
+  });
+
+  it("should parse field without type (REFFLD) and attach keywords", () => {
+    const lines = [
+      "     A            FIELD2",
+      "     A                                      REFFLD(ADRNO)",
+      "     A                                      TEXT('Address Number')"
+    ];
+
+    const file = new DisplayFile();
+    file.parse(lines);
+
+    const record = file.formats[0];
+    const field = record.fields[0];
+
+    expect(record.fields.length).toBe(1);
+    expect(field.name).toBe("FIELD2");
+    expect(field.type).toBe("");
+    expect(field.keywords.length).toBe(2);
+    expect(field.keywords[0].name).toBe("REFFLD");
+    expect(field.keywords[0].value).toBe("ADRNO");
+    expect(field.keywords[1].name).toBe("TEXT");
+    expect(field.keywords[1].value).toBe("'Address Number'");
+  });
 });
