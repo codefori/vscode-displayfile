@@ -511,6 +511,12 @@ export class DisplayFile {
     return result;
   }
 
+  /** DDS is fixed-column: a line's functions area (where keywords are
+   * coded) is positions 45-80, i.e. 0-indexed 44 up to the 80-character
+   * line length - the same slice parse() reads keywords back out of. */
+  private static readonly FUNCTIONS_COLUMN = 44;
+  private static readonly FUNCTIONS_WIDTH = 80 - DisplayFile.FUNCTIONS_COLUMN;
+
   /**
    * Renders a ConditionGroup[] into DDS conditioning-indicator column
    * strings (10 chars each: 1 relator + up to 3 indicators of 3 chars) -
@@ -552,7 +558,43 @@ export class DisplayFile {
     }
 
     const lastCondition = conditions[conditions.length - 1];
-    lines.push(`     A${lastCondition}                            ${keyword.name}${keyword.value ? `(${keyword.value})` : ``}`);
+    const text = `${keyword.name}${keyword.value ? `(${keyword.value})` : ``}`;
+
+    // Positions 45-80: everything before the functions area (the sequence
+    // number, the 'A', the conditioning columns, the name/length/position
+    // columns a keyword line leaves blank) padded out to column 44, so the
+    // keyword itself starts at 45 - where parse() slices it back out from.
+    const firstPrefix = `     A${lastCondition}                            `;
+    // A continuation line carries no conditioning of its own: blank columns
+    // fold in as nothing (see appendConditionLine), so the keyword keeps
+    // exactly the indicators coded on the line(s) before it.
+    const continuationPrefix = `     A`.padEnd(DisplayFile.FUNCTIONS_COLUMN);
+
+    // The keyword name and its opening bracket can't be split: parseKeywords
+    // ends a keyword at the newline, so a break before the '(' would read
+    // back as a bare name plus an orphaned value. Nothing real gets close to
+    // this, but if it ever did, one over-long line loses less than a value
+    // silently detached from its keyword.
+    const unsplittable = keyword.value ? keyword.name.length + 1 : text.length;
+
+    if (text.length <= DisplayFile.FUNCTIONS_WIDTH || unsplittable > DisplayFile.FUNCTIONS_WIDTH - 1) {
+      lines.push(firstPrefix + text);
+      return lines;
+    }
+
+    // '-' continues the value at column 45 of the next line with nothing
+    // inserted between the two halves, so the split can fall anywhere -
+    // mid-word, or inside a quoted literal - and still reassemble exactly.
+    let remaining = text;
+    let prefix = firstPrefix;
+
+    while (remaining.length > DisplayFile.FUNCTIONS_WIDTH) {
+      lines.push(`${prefix}${remaining.substring(0, DisplayFile.FUNCTIONS_WIDTH - 1)}-`);
+      remaining = remaining.substring(DisplayFile.FUNCTIONS_WIDTH - 1);
+      prefix = continuationPrefix;
+    }
+
+    lines.push(prefix + remaining);
 
     return lines;
   }

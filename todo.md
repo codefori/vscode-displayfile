@@ -99,12 +99,6 @@ transcribe a real table from.
   suspicious arity as a warning only. Never blocks confirm - see the ground
   rule.
 
-## Bugs noticed while researching the keyword path
-
-- **`getLinesForKeyword` emits no continuation lines**
-  (`src/ui/dspf.ts:540`) - a long value overflows column 80 instead of
-  wrapping with a `-`/`+` continuation.
-
 ## Explicitly not pursuing
 
 - **REFFLD resolution against a live IBM i connection** - we're intentionally

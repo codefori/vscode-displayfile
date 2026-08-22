@@ -630,6 +630,63 @@ describe(`conditioning indicators (AND/OR groups)`, () => {
     expect(reparsed.conditions).toEqual(field.conditions);
   });
 
+  it(`wraps a keyword too long for column 80 onto continuation lines, and round-trips it`, () => {
+    const keyword = {
+      name: `WDWTITLE`,
+      // Comfortably past column 80 on one line, and with a quoted literal
+      // that the split has to fall inside of.
+      value: `*TEXT 'Please confirm that you really want to delete this record' *COLOR WHT *TOP *CENTER`,
+      conditions: [],
+    };
+
+    const lines = DisplayFile.getLinesForKeyword(keyword);
+
+    expect(lines.length).toBeGreaterThan(1);
+    lines.forEach(line => expect(line.length).toBeLessThanOrEqual(80));
+    // Every line but the last is continued with a trailing '-', and every
+    // continuation resumes at column 45 (0-indexed 44).
+    lines.slice(0, -1).forEach(line => expect(line.endsWith(`-`)).toBe(true));
+    lines.slice(1).forEach(line => expect(line.substring(0, 44).trim()).toBe(`A`));
+
+    const dds = new DisplayFile();
+    dds.parse([
+      `     A          R FMT1`,
+      `     A            FLD1           5A  O  1  1`,
+      ...lines,
+    ]);
+
+    const reparsed = dds.formats.find(f => f.name === `FMT1`)!.fields[0].keywords;
+    expect(reparsed.filter(k => k.name === `WDWTITLE`)).toHaveLength(1);
+    expect(reparsed.find(k => k.name === `WDWTITLE`)?.value).toBe(keyword.value);
+  });
+
+  it(`keeps a wrapped keyword's conditioning indicators`, () => {
+    const keyword = {
+      name: `WDWTITLE`,
+      value: `*TEXT 'Please confirm that you really want to delete this record' *COLOR WHT`,
+      conditions: [{ indicators: [{ indicator: 30, negate: false }, { indicator: 31, negate: true }] }],
+    };
+
+    const lines = DisplayFile.getLinesForKeyword(keyword);
+
+    const dds = new DisplayFile();
+    dds.parse([
+      `     A          R FMT1`,
+      `     A            FLD1           5A  O  1  1`,
+      ...lines,
+    ]);
+
+    const reparsed = dds.formats.find(f => f.name === `FMT1`)!.fields[0].keywords.find(k => k.name === `WDWTITLE`);
+    expect(reparsed?.value).toBe(keyword.value);
+    expect(reparsed?.conditions).toEqual(keyword.conditions);
+  });
+
+  it(`leaves a keyword that already fits on one line alone`, () => {
+    const lines = DisplayFile.getLinesForKeyword({ name: `DSPATR`, value: `HI`, conditions: [] });
+
+    expect(lines).toEqual([`     A                                      DSPATR(HI)`]);
+  });
+
   it(`round-trips a multi-group (AND then OR) keyword condition`, () => {
     const keyword = {
       name: `DSPATR`,
