@@ -101,9 +101,6 @@ transcribe a real table from.
 
 ## Bugs noticed while researching the keyword path
 
-- **`WDWTITLE`'s `*COLOR` case is missing a `break`** (`webui/main.js:499`) -
-  it falls straight through into `*DSPATR` and pushes a bogus `DSPATR` keyword
-  carrying the colour value.
 - **`getLinesForKeyword` emits no continuation lines**
   (`src/ui/dspf.ts:540`) - a long value overflows column 80 instead of
   wrapping with a `-`/`+` continuation.

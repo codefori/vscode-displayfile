@@ -502,6 +502,7 @@ function renderSelectedFormat(layer, format, displayOnly = false) {
               value: parts[index + 1],
               conditions: []
             });
+            break;
           case `*DSPATR`:
             windowTitle.keywords.push({
               name: `DSPATR`,

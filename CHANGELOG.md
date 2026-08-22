@@ -6,6 +6,10 @@ Check [Keep a Changelog](http://keepachangelog.com/) for recommendations on how 
 
 ## [Unreleased]
 
+### Fixed
+
+- A window title's `*COLOR` parameter (`WDWTITLE(*TEXT 'x' *COLOR RED)`) fell through into the `*DSPATR` case and pushed a bogus `DSPATR` keyword carrying the colour's value. With a malformed `*COLOR` that has no value after it, rendering that keyword threw and the whole format fell back to a blank canvas.
+
 ## [0.3.2] - 2026-08-18
 
 ### Added

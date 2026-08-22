@@ -1773,6 +1773,24 @@ describe(`window title rendering (WDWTITLE)`, () => {
     expect(text.config.text).toBe(`Confirm Delete`);
   });
 
+  it(`treats *COLOR as its own parameter, not the start of a *DSPATR`, () => {
+    const sandbox = loadWebui();
+    // A trailing *COLOR with no value after it is malformed DDS, but it's the
+    // shape that exposes the fall-through: *COLOR must not also push a DSPATR
+    // keyword carrying (here, missing) the colour's value. Rendering that
+    // valueless DSPATR throws, and setWindowForFormat's catch-all turns the
+    // whole format into a blank canvas - so this checks the window renders.
+    sandbox.loadDDS(modelWithWindowTitle(`*TEXT 'Confirm Delete' *TOP *CENTER *COLOR`), `dds.dspf`, false);
+    const getLayer = captureLayer(sandbox);
+
+    sandbox.setWindowForFormat(`CONFIRMWIN`);
+
+    const titleGroup = getLayer().findOne(`#CONFIRMWIN::WINDOWTITLE`);
+    expect(titleGroup).toBeDefined();
+    const text = titleGroup.children.find((c: any) => c.type === `Text`);
+    expect(text.config.text).toBe(`Confirm Delete`);
+  });
+
   it(`doesn't render anything (or crash) when WDWTITLE has no *TEXT`, () => {
     const sandbox = loadWebui();
     sandbox.loadDDS(modelWithWindowTitle(`*COLOR WHT *TOP *CENTER`), `dds.dspf`, false);
