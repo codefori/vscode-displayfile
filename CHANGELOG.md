@@ -6,6 +6,8 @@ Check [Keep a Changelog](http://keepachangelog.com/) for recommendations on how 
 
 ## [Unreleased]
 
+## [0.3.3] - 2026-08-22
+
 ### Fixed
 
 - A keyword whose value ran past column 80 was written out as one over-long line, which DDS truncates at 80. Long keywords (a wordy `WDWTITLE`, say) now wrap onto continuation lines with a trailing `-`, so they compile and read back identically.
