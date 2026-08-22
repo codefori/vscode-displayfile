@@ -16,9 +16,9 @@ jobs:
     # into an upstream/other fork - releases here shouldn't happen elsewhere.
     if: github.repository == 'danlong005/DSPF-Editor'
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
 
-      - uses: actions/setup-node@v4
+      - uses: actions/setup-node@v5
         with:
           node-version: 20
 
