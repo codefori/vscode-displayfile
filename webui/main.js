@@ -2802,7 +2802,12 @@ function editKeyword(onUpdate, keyword) {
         const neg = group.querySelector(`#neg-${g}-${s}`).checked;
 
         if (ind !== `None`) {
-          indicators.push({ indicator: ind, negate: neg });
+          // The select's options are strings; Conditional.indicator is a
+          // number everywhere else (the parser produces numbers, and
+          // activeIndicators is a Set of them), so convert here rather than
+          // leaking a string into the model until the next round-trip
+          // through the document reparses it back into a number.
+          indicators.push({ indicator: Number(ind), negate: neg });
         }
       }
 

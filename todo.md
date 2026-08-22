@@ -107,9 +107,6 @@ transcribe a real table from.
 - **The keyword panel identifies a keyword by name+value**
   (`webui/main.js:2407`), so two `DSPATR(HI)` entries that differ only in
   their conditioning indicators collide on edit/delete.
-- **Confirm pushes `indicator` as a string** (`webui/main.js:2804`) while
-  `Conditional` types it as `number` (`webui/dspf.d.ts:187`). Survives only
-  because serialization calls `String(...)` on it.
 
 ## Explicitly not pursuing
 

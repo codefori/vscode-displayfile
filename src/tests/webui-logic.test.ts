@@ -1562,8 +1562,8 @@ describe(`editKeyword - condition groups (up to 3 OR'd groups of 3 AND'd indicat
     confirmButton.onclick();
 
     expect(saved.conditions).toEqual([
-      { indicators: [{ indicator: `10`, negate: false }] },
-      { indicators: [{ indicator: `20`, negate: true }] },
+      { indicators: [{ indicator: 10, negate: false }] },
+      { indicators: [{ indicator: 20, negate: true }] },
     ]);
   });
 
@@ -1580,8 +1580,29 @@ describe(`editKeyword - condition groups (up to 3 OR'd groups of 3 AND'd indicat
     confirmButton.onclick();
 
     expect(saved.conditions).toEqual([
-      { indicators: [{ indicator: `10`, negate: false }, { indicator: `11`, negate: false }] },
+      { indicators: [{ indicator: 10, negate: false }, { indicator: 11, negate: false }] },
     ]);
+  });
+
+  it(`saves indicators as numbers, so a just-edited keyword's conditions still match the indicator panel`, () => {
+    const sandbox = loadWebui();
+    let saved: any;
+    sandbox.editKeyword((newKeyword: any) => { saved = newKeyword; }, { name: `DSPATR`, value: `HI`, conditions: [] });
+
+    const formGroup = currentKeywordEditorGroup(sandbox);
+    formGroup.querySelector(`#ind-0-0`).value = `30`;
+
+    const confirmButton = formGroup.children[formGroup.children.length - 1];
+    confirmButton.onclick();
+
+    expect(saved.conditions[0].indicators[0].indicator).toBe(30);
+
+    // activeIndicators is a Set of numbers, so a string `30` here would never
+    // be satisfied - the keyword would look permanently "off" on the canvas
+    // until the document round-tripped through the parser again.
+    const panel = sandbox.createIndicatorsPanel([30]);
+    toggleIndicatorCheckbox(panel, 30, true);
+    expect(sandbox.indicatorsSatisfied(saved.conditions)).toBe(true);
   });
 
   it(`emits no conditions at all when nothing is selected in any group`, () => {
