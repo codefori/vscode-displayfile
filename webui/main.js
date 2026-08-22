@@ -2381,7 +2381,12 @@ function createKeywordPanel(id, inputKeywords, onUpdate) {
       return {
         icons,
         label: keyword.name,
-        value: keyword,
+        // The item's identity for edit/delete. It has to be the position in
+        // `keywords`, not the keyword itself: two entries can be identical
+        // apart from their conditioning indicators (a pair of DSPATR(HI)s
+        // gated by different indicators is ordinary DDS), and matching those
+        // by name+value hits whichever one comes first.
+        value: String(index),
         description: keyword.value,
         actions,
         // A plain "OR" chip between groups so the AND/OR structure is
@@ -2402,32 +2407,29 @@ function createKeywordPanel(id, inputKeywords, onUpdate) {
   rerenderTree();
 
   tree.addEventListener('vsc-run-action', (event) => {
-    console.log(event.detail);
-    /** @type {Keyword} */
-    const currentKeyword = event.detail.value;
-    const oldKeywordIndex = keywords.findIndex(k => k.name === currentKeyword.name && k.value === currentKeyword.value);
+    const oldKeywordIndex = Number(event.detail.value);
+    /** @type {Keyword|undefined} */
+    const currentKeyword = keywords[oldKeywordIndex];
+
+    // The tree was built from this same array, so this shouldn't happen -
+    // but acting on a stale index would edit or delete the wrong keyword.
+    if (!currentKeyword) { return; }
 
     switch (event.detail.actionId) {
       case `delete`:
-        if (oldKeywordIndex >= 0) {
-          keywords.splice(oldKeywordIndex, 1);
-        }
+        keywords.splice(oldKeywordIndex, 1);
         rerenderTree();
         onUpdate(keywords);
         break;
 
       case `edit`:
         editKeyword((newKeyword) => {
-          if (oldKeywordIndex >= 0) {
-            keywords[oldKeywordIndex] = newKeyword;
-          } else {
-            keywords.push(newKeyword);
-          }
+          keywords[oldKeywordIndex] = newKeyword;
 
           clearKeywordEditor();
           rerenderTree();
           onUpdate(keywords);
-        }, event.detail.value);
+        }, currentKeyword);
         break;
     }
   });

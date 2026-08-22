@@ -8,6 +8,7 @@ Check [Keep a Changelog](http://keepachangelog.com/) for recommendations on how 
 
 ### Fixed
 
+- Editing or deleting a keyword in the sidebar matched it by name and value, so two otherwise-identical keywords that differ only in their conditioning indicators (a pair of `DSPATR(HI)`s gated by different indicators, say) both acted on whichever one came first. Rows are now identified by position.
 - The keyword editor saved a condition's indicator as a string (`"30"`) while every other producer of one uses a number, so a keyword conditioned through the form looked permanently "off" on the canvas - and its indicator showed up as a second, duplicate checkbox in the Indicators tab - until the document round-tripped through the parser again.
 - A window title's `*COLOR` parameter (`WDWTITLE(*TEXT 'x' *COLOR RED)`) fell through into the `*DSPATR` case and pushed a bogus `DSPATR` keyword carrying the colour's value. With a malformed `*COLOR` that has no value after it, rendering that keyword threw and the whole format fell back to a blank canvas.
 

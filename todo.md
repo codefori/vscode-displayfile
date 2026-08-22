@@ -104,9 +104,6 @@ transcribe a real table from.
 - **`getLinesForKeyword` emits no continuation lines**
   (`src/ui/dspf.ts:540`) - a long value overflows column 80 instead of
   wrapping with a `-`/`+` continuation.
-- **The keyword panel identifies a keyword by name+value**
-  (`webui/main.js:2407`), so two `DSPATR(HI)` entries that differ only in
-  their conditioning indicators collide on edit/delete.
 
 ## Explicitly not pursuing
 

@@ -1539,6 +1539,67 @@ describe(`editKeyword - uppercasing`, () => {
   });
 });
 
+describe(`createKeywordPanel - identifying which keyword a row acts on`, () => {
+  /** Two keywords identical apart from their conditioning indicators -
+   * ordinary DDS (an indicator picks which DSPATR applies), and the case
+   * that a name+value match can't tell apart. */
+  function twoIdenticalDspatrs() {
+    return [
+      { name: `DSPATR`, value: `HI`, conditions: [group(cond(30))] },
+      { name: `DSPATR`, value: `HI`, conditions: [group(cond(31))] },
+    ];
+  }
+
+  function treeOf(panel: FakeElement): FakeElement {
+    const tree = panel.children.find(c => c.tagName === `VSCODE-TREE`);
+    if (!tree) { throw new Error(`No tree in the keyword panel`); }
+    return tree;
+  }
+
+  /** Mirrors vscode-elements' own vsc-run-action detail: the action id plus
+   * the `value` of the item the action was run on. */
+  function runAction(tree: FakeElement, rowIndex: number, actionId: string) {
+    const item = (tree as any).data[rowIndex];
+    tree.trigger(`vsc-run-action`, { detail: { actionId, item, value: item.value } });
+  }
+
+  function currentKeywordEditorGroup(sandbox: any): FakeElement {
+    const area = sandbox.document.getElementById(`keywordEditorArea`);
+    return area.children.find((el: FakeElement) => el.tagName === `VSCODE-FORM-GROUP`);
+  }
+
+  it(`deletes the row that was clicked, not the first keyword that looks like it`, () => {
+    const sandbox = loadWebui();
+    let updated: any;
+    const panel = sandbox.createKeywordPanel(`kw`, twoIdenticalDspatrs(), (keywords: any) => { updated = keywords; });
+
+    runAction(treeOf(panel), 1, `delete`);
+
+    expect(updated).toHaveLength(1);
+    expect(updated[0].conditions).toEqual([group(cond(30))]);
+  });
+
+  it(`edits the row that was clicked, not the first keyword that looks like it`, () => {
+    const sandbox = loadWebui();
+    let updated: any;
+    const panel = sandbox.createKeywordPanel(`kw`, twoIdenticalDspatrs(), (keywords: any) => { updated = keywords; });
+
+    runAction(treeOf(panel), 1, `edit`);
+
+    // The form opens on the second keyword - its indicator, not the first's.
+    const formGroup = currentKeywordEditorGroup(sandbox);
+    expect(formGroup.querySelector(`#ind-0-0`).value).toBe(`31`);
+
+    formGroup.querySelector(`#value`).value = `UL`;
+    const confirmButton = formGroup.children[formGroup.children.length - 1];
+    confirmButton.onclick();
+
+    expect(updated).toHaveLength(2);
+    expect(updated[0]).toEqual({ name: `DSPATR`, value: `HI`, conditions: [group(cond(30))] });
+    expect(updated[1].value).toBe(`UL`);
+  });
+});
+
 describe(`editKeyword - condition groups (up to 3 OR'd groups of 3 AND'd indicators)`, () => {
   function currentKeywordEditorGroup(sandbox: any): FakeElement {
     const area = sandbox.document.getElementById(`keywordEditorArea`);
