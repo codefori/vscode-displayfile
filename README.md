@@ -57,7 +57,11 @@ If the file's `DSPSIZ`/`PAGSIZ` defines more than one size (e.g. `*DS3` and
     conditioning indicators. A field or keyword can be conditioned by up
     to 9 indicators, coded as up to 3 groups of up to 3 — indicators
     within a group are ANDed together, and the groups themselves are ORed,
-    matching real DDS (and SDA).
+    matching real DDS (and SDA). Keywords whose value is a single code
+    (`COLOR`, `CHECK`, `EDTCDE`, `DATFMT`, `TIMFMT`, `SFLEND`) offer a
+    dropdown of the valid values with what each one means — and, like the
+    keyword name itself, it stays a combobox you can just type into, so
+    nothing stops you entering a keyword or value it doesn't know about.
 
 ### Adding new fields
 

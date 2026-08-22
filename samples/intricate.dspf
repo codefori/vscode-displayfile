@@ -16,6 +16,7 @@
      A            USERFLD       10A  O  3  2
      A                                      USER
      A            F1NWFLD       11D 0I  5  2
+     A                                      COLOR(YLW)
      A            REFFLD1        0R 0O  4 18
      A                                      REFFLD(CUSTNO)
      A                                      DSPATR(UL)

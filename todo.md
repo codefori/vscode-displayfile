@@ -11,60 +11,55 @@ keyword or value we don't happen to know about - a smarter control is a
 suggestion, never a gate.
 
 We already do exactly this for the keyword *name*: `createKeywordNameSelect`
-(`webui/main.js:2675`) is a `vscode-single-select` with `combobox = true` and
+(`webui/main.js:2791`) is a `vscode-single-select` with `combobox = true` and
 `creatable = true`, so you can pick from the list or just type something that
-isn't on it. Every value control below should mirror that same pattern, which
-makes this a proven direction rather than a new one. Note its workaround for
+isn't on it - and `createValueControl` right above it now mirrors that for the
+value. Every control below should keep doing the same. Note the workaround for
 `.value` only selecting an entry already in `.options` - `CONTRIBUTING.md`
-documents that gotcha, and it will bite again here.
+documents that gotcha, and it bit again in `createValueControl`.
 
 ## Where we are today
 
-The Value field is one bare free-text `vscode-textfield`
-(`webui/main.js:2728`). There is no per-keyword knowledge in the editor at
-all - `COLOR(PURPLE)`, `DSPATR(ZZ)`, and a one-arg `WINDOW(1)` all save
-silently. The only thing confirm does is uppercase (`webui/main.js:2787`).
+Tier 1 is done (shipped after 0.3.3): `KEYWORD_VALUES` (`webui/main.js:2640`)
+tables the single-token value sets, `keywordValueOptions`
+(`webui/main.js:2694`) turns one into dropdown options, `createValueControl`
+(`webui/main.js:2766`) picks the dropdown or the plain textfield, and the
+name select rebuilds that row on change. `DDS_KEYWORDS` (`webui/main.js:2604`)
+now spreads in all 48 `COMMAND_KEY_KEYWORDS`.
 
-What keyword knowledge the codebase *does* have is scattered and read-only,
-none of it reaching the editor:
+What's still true: there is no *structural* keyword knowledge in the editor -
+`DSPATR(ZZ)` and a one-arg `WINDOW(1)` still save silently, and nothing knows
+a keyword's arity or which level it's legal at. The knowledge that does exist
+is still scattered:
 
-- `DDS_KEYWORDS` (`webui/main.js:2592`) - a flat `string[]` of ~120 names, no
-  arity, level, values, or descriptions.
+- `DDS_KEYWORDS` - a flat `string[]` of names, no arity, level, or
+  description; `KEYWORD_VALUES` sits beside it as a second, separate table.
 - `colours` / `dateFormats` / `timeFormats` (`webui/main.js:49-79`) - value
-  maps used only when rendering the canvas.
+  maps for the canvas, two of which `KEYWORD_VALUES` now also feeds from.
 - ~10 ad-hoc `keyword.name === 'X'` special cases: `WINDOW`
-  (`src/ui/dspf.ts:766`), `WDWTITLE`/`WDWBORDER` (`webui/main.js:466-567`),
+  (`src/ui/dspf.ts:810`), `WDWTITLE`/`WDWBORDER` (`webui/main.js:466-567`),
   `DSPSIZ`, `PAGSIZ`, `SFLCTL`/`SFLPAG`, and the printer spacing keywords
   (`src/ui/dspf.ts:287`).
 
 The model is `interface Keyword { name, value?, conditions }`
-(`src/ui/dspf.ts:820`) - **the value is one opaque string end to end**, pasted
-verbatim inside `(...)` by `getLinesForKeyword` (`src/ui/dspf.ts:540`). Any
+(`src/ui/dspf.ts:862`) - **the value is one opaque string end to end**, pasted
+verbatim inside `(...)` by `getLinesForKeyword` (`src/ui/dspf.ts:546`). Any
 structured editing has to parse on open and recompose on confirm, or else
 change that type and ripple through parse, serialize, and every consumer.
 
 Good news on seed data: `.claude/skills/dds/SKILL.md` already holds the
 richest keyword tables in the repo (DSPATR values, COLOR, EDTCDE, CHECK,
-subfile keywords, WINDOW/WDWBORDER/WDWTITLE param forms, command keys). It's
-Markdown and invisible to the extension, but it's the obvious source to
-transcribe a real table from.
+subfile keywords, WINDOW/WDWBORDER/WDWTITLE param forms, command keys) - it's
+where `KEYWORD_VALUES` was transcribed from, and still the place to start for
+anything it doesn't cover yet.
 
-## Tier 1 - high value, low effort
+## Tier 1 - done
 
-- **Value dropdown for single-token enum keywords.** When the selected keyword
-  has a known value set, swap the free-text box for a creatable combobox
-  seeded with those values; an unknown keyword keeps the plain textfield
-  exactly as today. Covers `COLOR`, `CHECK`, `EDTCDE`, `DATFMT`, `TIMFMT`,
-  `SFLEND`. Show the meaning in the option label (`HI - High intensity`) while
-  the saved value stays the bare code. This is the one the whole idea started
-  from, and `COLOR`/`DSPATR` are far and away the most-used keywords in our
-  own samples.
-- **Rebuild the value control when the keyword name changes.** Prerequisite
-  for the above - the name select has no change handler today, so the value
-  row needs to re-render when a different keyword is picked.
-- **List all 24 `CAxx`/`CFxx` in `DDS_KEYWORDS`.** Only `01/03/12/24` of each
-  are there now, so `CF05` has to be typed by hand. `COMMAND_KEY_PATTERN`
-  (`webui/main.js:1539`) already encodes the real range.
+All three shipped: the value dropdown for single-token enum keywords
+(`COLOR`, `CHECK`, `EDTCDE`, `DATFMT`, `TIMFMT`, `SFLEND`), rebuilding the
+value control when the keyword name changes, and all 24 `CAxx`/`CFxx` in the
+name list. `DSPATR` was deliberately left out - it's space-separated
+multi-value, which is Tier 2's first item.
 
 ## Tier 2 - medium
 

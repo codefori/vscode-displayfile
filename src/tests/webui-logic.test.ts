@@ -1600,6 +1600,184 @@ describe(`createKeywordPanel - identifying which keyword a row acts on`, () => {
   });
 });
 
+describe(`editKeyword - the Value control`, () => {
+  function currentKeywordEditorGroup(sandbox: any): FakeElement {
+    const area = sandbox.document.getElementById(`keywordEditorArea`);
+    return area.children.find((el: FakeElement) => el.tagName === `VSCODE-FORM-GROUP`);
+  }
+
+  function valueControl(formGroup: FakeElement): FakeElement {
+    return formGroup.querySelector(`#value`);
+  }
+
+  function nameSelect(formGroup: FakeElement): FakeElement {
+    return formGroup.querySelector(`#keyword`);
+  }
+
+  /** Mirrors picking a different keyword in the (creatable) name combobox. */
+  function pickKeyword(formGroup: FakeElement, name: string) {
+    const select = nameSelect(formGroup);
+    select.value = name;
+    select.trigger(`change`);
+  }
+
+  it(`offers a dropdown of known values for a keyword we have tabled`, () => {
+    const sandbox = loadWebui();
+    sandbox.editKeyword(() => {}, { name: `COLOR`, value: ``, conditions: [] });
+
+    const control = valueControl(currentKeywordEditorGroup(sandbox));
+    expect(control.tagName).toBe(`VSCODE-SINGLE-SELECT`);
+    // The meaning is in the label; the value saved is only ever the DDS code.
+    expect(control.options).toContainEqual({ label: `GRN - Green (the default)`, value: `GRN` });
+    expect(control.options.map(o => o.value)).toContain(`BLU`);
+  });
+
+  it(`keeps the plain free-text box for a keyword we have no value set for`, () => {
+    const sandbox = loadWebui();
+    sandbox.editKeyword(() => {}, { name: `MYOWNKW`, value: `whatever`, conditions: [] });
+
+    expect(valueControl(currentKeywordEditorGroup(sandbox)).tagName).toBe(`VSCODE-TEXTFIELD`);
+  });
+
+  it(`stays creatable, so a value that isn't on the list can still be typed and saved`, () => {
+    const sandbox = loadWebui();
+    let saved: any;
+    sandbox.editKeyword((newKeyword: any) => { saved = newKeyword; }, { name: `COLOR`, value: ``, conditions: [] });
+
+    const formGroup = currentKeywordEditorGroup(sandbox);
+    const control = valueControl(formGroup);
+    expect(control.creatable).toBe(true);
+    control.value = `mauve`;
+
+    const confirmButton = formGroup.children[formGroup.children.length - 1];
+    confirmButton.onclick();
+
+    expect(saved.value).toBe(`MAUVE`);
+  });
+
+  it(`shows an existing value the table doesn't cover instead of blanking it`, () => {
+    const sandbox = loadWebui();
+    sandbox.editKeyword(() => {}, { name: `COLOR`, value: `PURPLE`, conditions: [] });
+
+    // .value only selects something already in .options, so an unknown value
+    // has to be added as one - otherwise the editor silently drops it.
+    const control = valueControl(currentKeywordEditorGroup(sandbox));
+    expect(control.value).toBe(`PURPLE`);
+  });
+
+  it(`saves the bare code picked from the dropdown, not its explanatory label`, () => {
+    const sandbox = loadWebui();
+    let saved: any;
+    sandbox.editKeyword((newKeyword: any) => { saved = newKeyword; }, { name: `EDTCDE`, value: ``, conditions: [] });
+
+    const formGroup = currentKeywordEditorGroup(sandbox);
+    valueControl(formGroup).value = `Y`;
+
+    const confirmButton = formGroup.children[formGroup.children.length - 1];
+    confirmButton.onclick();
+
+    expect(saved.value).toBe(`Y`);
+  });
+
+  it(`seeds DATFMT and TIMFMT from the same maps the canvas renders them with`, () => {
+    const sandbox = loadWebui();
+    sandbox.editKeyword(() => {}, { name: `DATFMT`, value: ``, conditions: [] });
+
+    const control = valueControl(currentKeywordEditorGroup(sandbox));
+    expect(control.options).toContainEqual({ label: `*MDY - mm/dd/yyyy`, value: `*MDY` });
+  });
+
+  it(`rebuilds the Value row when a different keyword is picked`, () => {
+    const sandbox = loadWebui();
+    sandbox.editKeyword(() => {}, { name: `TEXT`, value: ``, conditions: [] });
+
+    const formGroup = currentKeywordEditorGroup(sandbox);
+    expect(valueControl(formGroup).tagName).toBe(`VSCODE-TEXTFIELD`);
+
+    pickKeyword(formGroup, `COLOR`);
+
+    const rebuilt = valueControl(formGroup);
+    expect(rebuilt.tagName).toBe(`VSCODE-SINGLE-SELECT`);
+    expect(rebuilt.options.map(o => o.value)).toContain(`TRQ`);
+    // Replaced in place - not appended alongside the old control, and still
+    // ahead of the Conditions section and Confirm button.
+    expect(formGroup.querySelectorAll(`#value`)).toHaveLength(1);
+    expect(formGroup.children[formGroup.children.length - 1].innerText).toBe(`Confirm`);
+  });
+
+  it(`carries a typed value over to a keyword we can't say it's wrong for`, () => {
+    const sandbox = loadWebui();
+    let saved: any;
+    sandbox.editKeyword((newKeyword: any) => { saved = newKeyword; }, { name: `COLOR`, value: `RED`, conditions: [] });
+
+    const formGroup = currentKeywordEditorGroup(sandbox);
+    // DSPATR is deliberately not tabled (it's multi-value), so its box is
+    // free text - nothing there says RED is wrong, so don't throw it away.
+    pickKeyword(formGroup, `DSPATR`);
+
+    expect(valueControl(formGroup).tagName).toBe(`VSCODE-TEXTFIELD`);
+
+    const confirmButton = formGroup.children[formGroup.children.length - 1];
+    confirmButton.onclick();
+
+    expect(saved.value).toBe(`RED`);
+  });
+
+  it(`drops a value the newly picked keyword's own list rules out`, () => {
+    const sandbox = loadWebui();
+    sandbox.editKeyword(() => {}, { name: `COLOR`, value: `RED`, conditions: [] });
+
+    const formGroup = currentKeywordEditorGroup(sandbox);
+    pickKeyword(formGroup, `EDTCDE`);
+
+    const rebuilt = valueControl(formGroup);
+    expect(rebuilt.tagName).toBe(`VSCODE-SINGLE-SELECT`);
+    expect(rebuilt.value).toBeUndefined();
+    // RED isn't an edit code, so it isn't carried over as an option either.
+    expect(rebuilt.options.map(o => o.value)).not.toContain(`RED`);
+  });
+
+  it(`keeps a value that's valid for both keywords`, () => {
+    const sandbox = loadWebui();
+    sandbox.editKeyword(() => {}, { name: `DATFMT`, value: `*ISO`, conditions: [] });
+
+    const formGroup = currentKeywordEditorGroup(sandbox);
+    pickKeyword(formGroup, `TIMFMT`);
+
+    expect(valueControl(formGroup).value).toBe(`*ISO`);
+  });
+});
+
+describe(`the keyword name list - command keys`, () => {
+  /** The list is a module-level const, so read it back off the name
+   * combobox the editor actually builds from it. */
+  function keywordNames(sandbox: any): string[] {
+    sandbox.editKeyword(() => {});
+    const area = sandbox.document.getElementById(`keywordEditorArea`);
+    const formGroup = area.children.find((el: FakeElement) => el.tagName === `VSCODE-FORM-GROUP`);
+    return formGroup.querySelector(`#keyword`).options.map((option: any) => option.value);
+  }
+
+  it(`offers every CA01-CA24 and CF01-CF24`, () => {
+    const sandbox = loadWebui();
+    const names = keywordNames(sandbox);
+
+    expect(names.filter(name => sandbox.isCommandKeyKeyword(name))).toHaveLength(48);
+    // The ones that used to have to be typed by hand, plus the boundaries.
+    [`CA01`, `CA05`, `CA24`, `CF05`, `CF17`, `CF24`].forEach(name => expect(names).toContain(name));
+  });
+
+  it(`has no duplicates, and nothing outside the real 01-24 range`, () => {
+    const sandbox = loadWebui();
+    const names = keywordNames(sandbox);
+
+    expect(new Set(names).size).toBe(names.length);
+    names.filter(name => /^(CA|CF)\d/.test(name)).forEach(name => {
+      expect(sandbox.isCommandKeyKeyword(name)).toBe(true);
+    });
+  });
+});
+
 describe(`editKeyword - condition groups (up to 3 OR'd groups of 3 AND'd indicators)`, () => {
   function currentKeywordEditorGroup(sandbox: any): FakeElement {
     const area = sandbox.document.getElementById(`keywordEditorArea`);

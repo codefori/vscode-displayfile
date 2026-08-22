@@ -2587,15 +2587,25 @@ function clearKeywordEditor() {
   keywordEditorArea.innerHTML = ``;
 }
 
+// Every CA01-CA24 / CF01-CF24 command key, the same 01-24 range
+// COMMAND_KEY_PATTERN recognises when reading them back out of a file.
+// Listing them all is what keeps CF05 (say) pickable instead of something
+// you have to know to type.
+const COMMAND_KEY_KEYWORDS = Array.from({ length: 24 }, (_, index) => {
+  const number = String(index + 1).padStart(2, `0`);
+  return [`CA${number}`, `CF${number}`];
+}).flat();
+
 // Common DDS keywords for display files (DSPF) and printer files (PRTF), at
-// file/record/field level. Not necessarily exhaustive - CAxx/CFxx go up to 24,
-// and there are obscure/version-specific keywords not listed here. The keyword
-// select below is a filterable combobox that also accepts free text, so a
-// keyword missing from this list can still just be typed directly.
+// file/record/field level. Not necessarily exhaustive - there are
+// obscure/version-specific keywords not listed here. The keyword select below
+// is a filterable combobox that also accepts free text, so a keyword missing
+// from this list can still just be typed directly.
 const DDS_KEYWORDS = [
+  ...COMMAND_KEY_KEYWORDS,
   `AFPRSC`, `ALARM`, `ALIGN`, `ASSUME`, `AUTO`,
   `BARCODE`, `BLANKS`, `BLINK`,
-  `CA01`, `CA03`, `CA12`, `CA24`, `CDEFNT`, `CF01`, `CF03`, `CF12`, `CF24`,
+  `CDEFNT`,
   `CHANGE`, `CHECK`, `CHGINPDFT`, `CHRSIZ`, `CLRL`, `COLOR`, `CONCAT`, `CPI`, `CSRLOC`,
   `DATA`, `DATE`, `DATFMT`, `DATSEP`, `DFRWRT`, `DFT`, `DSPATR`, `DSPSIZ`, `DUPLEX`,
   `EDTCDE`, `EDTWRD`, `END`, `ENDPAGE`, `ERRMSG`, `ERRMSGID`, `ERRSFL`,
@@ -2616,6 +2626,78 @@ const DDS_KEYWORDS = [
   `VALUES`, `VLDCMDKEY`,
   `WDWBORDER`, `WDWTITLE`, `WINDOW`, `WRDWRAP`,
 ].sort();
+
+/**
+ * Value sets for keywords whose value is a single token, keyed by keyword
+ * name: value code to what it means. Feeds the Value control's dropdown -
+ * a keyword that isn't here keeps the plain free-text box, and even one
+ * that is here stays a creatable combobox, so a value we don't have tabled
+ * (or a newer one IBM has added since) can still just be typed.
+ *
+ * Deliberately excludes the space-separated multi-value keywords - DSPATR(HI UL)
+ * can't be expressed by a single-select at all.
+ */
+const KEYWORD_VALUES = {
+  CHECK: {
+    AB: `Allow blank`,
+    ER: `Erase to end of field on first keystroke`,
+    LC: `Lowercase allowed`,
+    ME: `Mandatory entry`,
+    MF: `Mandatory fill`,
+    RB: `Right-to-left blank fill`,
+    RL: `Right-to-left entry`,
+    VN: `Validate name`,
+  },
+  COLOR: {
+    GRN: `Green (the default)`,
+    WHT: `White`,
+    RED: `Red`,
+    TRQ: `Turquoise`,
+    YLW: `Yellow`,
+    PNK: `Pink`,
+    BLU: `Blue`,
+  },
+  // The same maps the canvas renders these fields from, so the dropdown and
+  // what you see on screen can't drift apart.
+  DATFMT: dateFormats,
+  EDTCDE: {
+    1: `No sign, no comma, no zero suppression`,
+    2: `No sign, comma, no zero suppression`,
+    3: `No sign, no comma, zero suppression`,
+    4: `No sign, comma, zero suppression`,
+    J: `CR for negative, no comma`,
+    K: `CR for negative, comma`,
+    L: `CR for negative, no comma, zero suppression`,
+    M: `CR for negative, comma, zero suppression`,
+    N: `Minus for negative, no comma`,
+    O: `Minus for negative, comma`,
+    P: `Minus for negative, no comma, zero suppression`,
+    Q: `Minus for negative, comma, zero suppression`,
+    Y: `Date format (slashes)`,
+    Z: `Suppress leading zeros, no sign`,
+  },
+  SFLEND: {
+    '*MORE': `"More..." at the bottom of a full page`,
+    '*PLUS': `"+" at the bottom of a full page`,
+    '*SCRBAR': `Scroll bar`,
+  },
+  TIMFMT: timeFormats,
+};
+
+/**
+ * The dropdown options for a keyword's value, or undefined for a keyword
+ * we have no value set for (which keeps the plain text box). The option
+ * label carries the meaning so the list is readable; the value that gets
+ * saved is only ever the bare DDS code.
+ * @param {string} keywordName
+ */
+function keywordValueOptions(keywordName) {
+  const values = KEYWORD_VALUES[keywordName];
+
+  return values
+    ? Object.entries(values).map(([value, meaning]) => ({ label: `${value} - ${meaning}`, value }))
+    : undefined;
+}
 
 /**
  * Uppercases everything except DDS string literals (single-quoted text,
@@ -2675,6 +2757,37 @@ function editKeyword(onUpdate, keyword) {
     return input;
   };
 
+  /**
+   * The Value row: a creatable combobox of known values when we have a set
+   * for this keyword, and the plain free-text box otherwise. Both accept
+   * anything typed - see the note on createKeywordNameSelect below - so a
+   * keyword or value we don't have tabled is never blocked.
+   */
+  const createValueControl = (id, keywordName, value) => {
+    const options = keywordValueOptions(keywordName);
+
+    if (!options) {
+      return createInputField(id, value);
+    }
+
+    const select = document.createElement(`vscode-single-select`);
+    select.setAttribute(`id`, id);
+    select.combobox = true;
+    select.creatable = true;
+    select.filter = `contains`;
+
+    // Same .value/.options gotcha as the keyword name select: an existing
+    // value we don't have in the table has to be added as an option, or
+    // opening the editor on it would silently blank it out.
+    const known = options.find(option => option.value === value);
+    select.options = value && !known ? [{ label: value, value }, ...options] : options;
+    if (value) {
+      select.value = value;
+    }
+
+    return select;
+  };
+
   const createKeywordNameSelect = (id, value) => {
     const select = document.createElement(`vscode-single-select`);
     select.setAttribute(`id`, id);
@@ -2725,11 +2838,33 @@ function editKeyword(onUpdate, keyword) {
     return checkbox;
   };
 
-  group.appendChild(createLabel(`Keyword`, `keyword`));
-  group.appendChild(createKeywordNameSelect(`keyword`, keyword ? keyword.name : ``));
+  const keywordName = keyword ? keyword.name : ``;
 
+  const nameSelect = createKeywordNameSelect(`keyword`, keywordName);
+  group.appendChild(createLabel(`Keyword`, `keyword`));
+  group.appendChild(nameSelect);
+
+  let valueControl = createValueControl(`value`, keywordName, keyword ? (keyword.value || ``) : ``);
   group.appendChild(createLabel(`Value`, `value`));
-  group.appendChild(createInputField(`value`, keyword ? (keyword.value || ``) : ``));
+  group.appendChild(valueControl);
+
+  // Which control the Value row needs depends on which keyword is selected,
+  // so picking a different name has to rebuild it in place.
+  nameSelect.addEventListener(`change`, () => {
+    const newName = (nameSelect.value || ``).toUpperCase();
+    const currentValue = valueControl.value || ``;
+    const options = keywordValueOptions(newName);
+
+    // Carry the value over to the new control only when it could still be
+    // right: anything goes in a free-text box, but offering a dropdown of
+    // COLOR's values while it still holds a leftover EDTCDE code would be
+    // claiming a value we know is wrong.
+    const stillValid = !options || options.some(option => option.value === currentValue.toUpperCase());
+
+    const replacement = createValueControl(`value`, newName, stillValid ? currentValue : ``);
+    group.replaceChild(replacement, valueControl);
+    valueControl = replacement;
+  });
 
   // Real DDS conditions a field/keyword with up to 3 OR'd groups (each an
   // AND of up to 3 indicators, via continuation lines) - 3x3 covers the

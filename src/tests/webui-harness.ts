@@ -37,7 +37,14 @@ class FakeElement {
     this.tagName = tag.toUpperCase();
   }
 
-  setAttribute(name: string, value: any) { this.attributes[name] = String(value); }
+  setAttribute(name: string, value: any) {
+    this.attributes[name] = String(value);
+    // vscode-textfield (like a plain <input>) reflects its value attribute
+    // into the property, so code that sets one and reads back the other
+    // behaves the same here. A vscode-*-select doesn't - its .value is
+    // constrained to its .options (see the setter below).
+    if (name === `value` && !this.tagName.includes(`SELECT`)) { this._value = String(value); }
+  }
   getAttribute(name: string) { return this.attributes[name]; }
   removeAttribute(name: string) { delete this.attributes[name]; }
   toggleAttribute(name: string, force?: boolean) {
@@ -50,6 +57,15 @@ class FakeElement {
     this.children.push(child);
     child.parentElement = this;
     return child;
+  }
+
+  replaceChild(child: FakeElement, existing: FakeElement) {
+    const index = this.children.indexOf(existing);
+    if (index < 0) { throw new Error(`replaceChild: node to replace is not a child`); }
+    this.children[index] = child;
+    child.parentElement = this;
+    existing.parentElement = undefined;
+    return existing;
   }
 
   insertBefore(child: FakeElement, ref: FakeElement | null) {

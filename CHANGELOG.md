@@ -6,6 +6,11 @@ Check [Keep a Changelog](http://keepachangelog.com/) for recommendations on how 
 
 ## [Unreleased]
 
+### Added
+
+- The keyword editor's Value field now offers a dropdown of the valid values for keywords whose value is a single code - `COLOR`, `CHECK`, `EDTCDE`, `DATFMT`, `TIMFMT` and `SFLEND` - each labelled with what it means (`Y - Date format (slashes)`), while what gets saved is just the bare code. It stays a creatable combobox, so a value that isn't on the list can still be typed, and a keyword with no known value set keeps the plain text box exactly as before. Picking a different keyword rebuilds the Value row to match.
+- All 24 `CAxx` and `CFxx` command keys are now in the keyword name list - only `01`, `03`, `12` and `24` of each were there before, so anything else had to be typed by hand.
+
 ## [0.3.3] - 2026-08-22
 
 ### Fixed
