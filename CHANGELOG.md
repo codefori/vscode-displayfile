@@ -6,6 +6,8 @@ Check [Keep a Changelog](http://keepachangelog.com/) for recommendations on how 
 
 ## [Unreleased]
 
+## [0.4.0] - 2026-08-22
+
 ### Added
 
 - `DSPATR` now gets a checkbox per display attribute (`HI - High intensity`, `UL - Underline`, ...) in the keyword editor, since its value is a space-separated list of attributes rather than a single code. The text box stays alongside them as the value's source of truth and stays fully editable, so a hand-written attribute we don't have tabled survives being ticked around, and typing into the box keeps the checkboxes in step.
