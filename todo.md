@@ -63,9 +63,11 @@ multi-value, which is Tier 2's first item.
 
 ## Tier 2 - medium
 
-- **Multi-value keywords.** `DSPATR(HI UL)` is a space-separated list, which a
-  single-select can't express. Wants a `vscode-multi-select` or a row of
-  checkboxes - with free text still reachable for anything not on the list.
+- ~~**Multi-value keywords.**~~ Done: `DSPATR` gets a checkbox per attribute
+  over a text box that stays the value's source of truth (a
+  `vscode-multi-select` isn't creatable, so it couldn't keep the escape
+  hatch). `MULTI_VALUE_KEYWORDS` marks which keywords take a list; nothing
+  else needs one yet.
 - **Per-keyword description and level hint in the editor.** One line
   explaining the selected keyword and where it's legal (file / record /
   field). Purely additive, no validation. This is *not* the

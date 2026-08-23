@@ -1514,7 +1514,7 @@ describe(`editKeyword - uppercasing`, () => {
     sandbox.editKeyword((newKeyword: any) => { saved = newKeyword; }, { name: `COLOR`, value: ``, conditions: [] });
 
     const group = currentKeywordEditorGroup(sandbox);
-    const valueField = group.children.find((el: FakeElement) => el.attributes.id === `value`);
+    const valueField = group.querySelector(`#value`);
     valueField.value = `blu`;
 
     const confirmButton = group.children[group.children.length - 1];
@@ -1529,7 +1529,7 @@ describe(`editKeyword - uppercasing`, () => {
     sandbox.editKeyword((newKeyword: any) => { saved = newKeyword; }, { name: `WDWTITLE`, value: ``, conditions: [] });
 
     const group = currentKeywordEditorGroup(sandbox);
-    const valueField = group.children.find((el: FakeElement) => el.attributes.id === `value`);
+    const valueField = group.querySelector(`#value`);
     valueField.value = `*text 'Confirm delete' *color wht *top *center`;
 
     const confirmButton = group.children[group.children.length - 1];
@@ -1711,9 +1711,9 @@ describe(`editKeyword - the Value control`, () => {
     sandbox.editKeyword((newKeyword: any) => { saved = newKeyword; }, { name: `COLOR`, value: `RED`, conditions: [] });
 
     const formGroup = currentKeywordEditorGroup(sandbox);
-    // DSPATR is deliberately not tabled (it's multi-value), so its box is
-    // free text - nothing there says RED is wrong, so don't throw it away.
-    pickKeyword(formGroup, `DSPATR`);
+    // WDWTITLE has no value set of its own, so its box is free text -
+    // nothing there says RED is wrong, so don't throw it away.
+    pickKeyword(formGroup, `WDWTITLE`);
 
     expect(valueControl(formGroup).tagName).toBe(`VSCODE-TEXTFIELD`);
 
@@ -1745,6 +1745,156 @@ describe(`editKeyword - the Value control`, () => {
     pickKeyword(formGroup, `TIMFMT`);
 
     expect(valueControl(formGroup).value).toBe(`*ISO`);
+  });
+});
+
+describe(`editKeyword - multi-value keywords (DSPATR)`, () => {
+  function currentKeywordEditorGroup(sandbox: any): FakeElement {
+    const area = sandbox.document.getElementById(`keywordEditorArea`);
+    return area.children.find((el: FakeElement) => el.tagName === `VSCODE-FORM-GROUP`);
+  }
+
+  function valueBox(formGroup: FakeElement): FakeElement {
+    return formGroup.querySelector(`#value`);
+  }
+
+  /** The checkbox for one DSPATR code, found by the code its label starts with. */
+  function attributeCheckbox(formGroup: FakeElement, code: string): FakeElement {
+    const row = valueBox(formGroup).parentElement!;
+    const checkbox = row.children.find(child =>
+      child.tagName === `VSCODE-CHECKBOX` && child.attributes.label.startsWith(`${code} - `));
+    if (!checkbox) { throw new Error(`No checkbox for DSPATR(${code})`); }
+    return checkbox;
+  }
+
+  function toggle(formGroup: FakeElement, code: string, checked: boolean) {
+    const checkbox = attributeCheckbox(formGroup, code);
+    checkbox.attributes.checked = checked ? `true` : `false`;
+    checkbox.trigger(`change`);
+  }
+
+  function isChecked(formGroup: FakeElement, code: string) {
+    return attributeCheckbox(formGroup, code).checked;
+  }
+
+  it(`offers a checkbox per attribute alongside a box that's still free text`, () => {
+    const sandbox = loadWebui();
+    sandbox.editKeyword(() => {}, { name: `DSPATR`, value: ``, conditions: [] });
+
+    const formGroup = currentKeywordEditorGroup(sandbox);
+    // Not a dropdown: DSPATR(HI UL) is a list, which a single-select can't say.
+    expect(valueBox(formGroup).tagName).toBe(`VSCODE-TEXTFIELD`);
+    expect(attributeCheckbox(formGroup, `HI`).attributes.label).toBe(`HI - High intensity`);
+    expect(attributeCheckbox(formGroup, `MDT`)).toBeDefined();
+  });
+
+  it(`builds a space-separated value as attributes are checked`, () => {
+    const sandbox = loadWebui();
+    let saved: any;
+    sandbox.editKeyword((newKeyword: any) => { saved = newKeyword; }, { name: `DSPATR`, value: ``, conditions: [] });
+
+    const formGroup = currentKeywordEditorGroup(sandbox);
+    toggle(formGroup, `HI`, true);
+    toggle(formGroup, `UL`, true);
+
+    expect(valueBox(formGroup).value).toBe(`HI UL`);
+
+    const confirmButton = formGroup.children[formGroup.children.length - 1];
+    confirmButton.onclick();
+
+    expect(saved.value).toBe(`HI UL`);
+  });
+
+  it(`ticks the boxes for the attributes an existing keyword already has`, () => {
+    const sandbox = loadWebui();
+    sandbox.editKeyword(() => {}, { name: `DSPATR`, value: `HI UL`, conditions: [] });
+
+    const formGroup = currentKeywordEditorGroup(sandbox);
+    expect(isChecked(formGroup, `HI`)).toBe(true);
+    expect(isChecked(formGroup, `UL`)).toBe(true);
+    expect(isChecked(formGroup, `RI`)).toBe(false);
+  });
+
+  it(`removes just the unchecked attribute, leaving the rest in place`, () => {
+    const sandbox = loadWebui();
+    sandbox.editKeyword(() => {}, { name: `DSPATR`, value: `HI UL RI`, conditions: [] });
+
+    const formGroup = currentKeywordEditorGroup(sandbox);
+    toggle(formGroup, `UL`, false);
+
+    expect(valueBox(formGroup).value).toBe(`HI RI`);
+  });
+
+  it(`keeps a code we don't have tabled instead of dropping it`, () => {
+    const sandbox = loadWebui();
+    sandbox.editKeyword(() => {}, { name: `DSPATR`, value: `ZZ HI`, conditions: [] });
+
+    const formGroup = currentKeywordEditorGroup(sandbox);
+    expect(isChecked(formGroup, `HI`)).toBe(true);
+
+    // Toggling a known attribute rebuilds the value from the box, so the
+    // hand-written ZZ has to survive it.
+    toggle(formGroup, `UL`, true);
+    expect(valueBox(formGroup).value).toBe(`ZZ HI UL`);
+
+    toggle(formGroup, `HI`, false);
+    expect(valueBox(formGroup).value).toBe(`ZZ UL`);
+  });
+
+  it(`updates the checkboxes when the value is typed into the box directly`, () => {
+    const sandbox = loadWebui();
+    sandbox.editKeyword(() => {}, { name: `DSPATR`, value: ``, conditions: [] });
+
+    const formGroup = currentKeywordEditorGroup(sandbox);
+    const box = valueBox(formGroup);
+    box.value = `hi ri`;
+    // Whichever of the textfield's events reaches us - the native one or
+    // vscode-textfield's own - has to keep the boxes in step.
+    box.trigger(`vsc-input`);
+
+    // Lowercase as typed - confirm uppercases on save, and the boxes
+    // shouldn't sit unticked in the meantime.
+    expect(isChecked(formGroup, `HI`)).toBe(true);
+    expect(isChecked(formGroup, `RI`)).toBe(true);
+    expect(isChecked(formGroup, `UL`)).toBe(false);
+  });
+
+  it(`updates the checkboxes on the native input event too`, () => {
+    const sandbox = loadWebui();
+    sandbox.editKeyword(() => {}, { name: `DSPATR`, value: ``, conditions: [] });
+
+    const formGroup = currentKeywordEditorGroup(sandbox);
+    const box = valueBox(formGroup);
+    box.value = `BL`;
+    box.trigger(`input`);
+
+    expect(isChecked(formGroup, `BL`)).toBe(true);
+  });
+
+  it(`drops a carried-over value whose codes aren't attributes`, () => {
+    const sandbox = loadWebui();
+    sandbox.editKeyword(() => {}, { name: `COLOR`, value: `RED`, conditions: [] });
+
+    const formGroup = currentKeywordEditorGroup(sandbox);
+    const nameSelect = formGroup.querySelector(`#keyword`);
+    nameSelect.value = `DSPATR`;
+    nameSelect.trigger(`change`);
+
+    expect(valueBox(formGroup).value).toBe(``);
+    expect(isChecked(formGroup, `HI`)).toBe(false);
+  });
+
+  it(`carries over a value whose codes are all attributes`, () => {
+    const sandbox = loadWebui();
+    sandbox.editKeyword(() => {}, { name: `MYOWNKW`, value: `HI UL`, conditions: [] });
+
+    const formGroup = currentKeywordEditorGroup(sandbox);
+    const nameSelect = formGroup.querySelector(`#keyword`);
+    nameSelect.value = `DSPATR`;
+    nameSelect.trigger(`change`);
+
+    expect(valueBox(formGroup).value).toBe(`HI UL`);
+    expect(isChecked(formGroup, `UL`)).toBe(true);
   });
 });
 

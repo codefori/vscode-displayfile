@@ -2676,6 +2676,17 @@ const KEYWORD_VALUES = {
     Y: `Date format (slashes)`,
     Z: `Suppress leading zeros, no sign`,
   },
+  DSPATR: {
+    HI: `High intensity`,
+    BL: `Blink`,
+    UL: `Underline`,
+    RI: `Reverse image`,
+    ND: `Non-display`,
+    PR: `Protected (no input)`,
+    PC: `Position cursor here`,
+    CS: `Column separator`,
+    MDT: `Set modified data tag`,
+  },
   SFLEND: {
     '*MORE': `"More..." at the bottom of a full page`,
     '*PLUS': `"+" at the bottom of a full page`,
@@ -2683,6 +2694,22 @@ const KEYWORD_VALUES = {
   },
   TIMFMT: timeFormats,
 };
+
+/**
+ * Keywords whose value is a space-separated LIST of the codes in
+ * KEYWORD_VALUES rather than a single one - DSPATR(HI UL) is two display
+ * attributes, not a value called "HI UL". A single-select can't express
+ * that, so these get the checkbox treatment instead (see createValueControl).
+ */
+const MULTI_VALUE_KEYWORDS = new Set([`DSPATR`]);
+
+/**
+ * Splits a space-separated keyword value into its individual codes.
+ * @param {string} value
+ */
+function valueTokens(value) {
+  return (value || ``).trim().split(/\s+/).filter(token => token.length > 0);
+}
 
 /**
  * The dropdown options for a keyword's value, or undefined for a keyword
@@ -2758,20 +2785,86 @@ function editKeyword(onUpdate, keyword) {
   };
 
   /**
-   * The Value row: a creatable combobox of known values when we have a set
-   * for this keyword, and the plain free-text box otherwise. Both accept
-   * anything typed - see the note on createKeywordNameSelect below - so a
-   * keyword or value we don't have tabled is never blocked.
+   * The Value row, always wrapped in a container so the whole row can be
+   * swapped out when the keyword name changes (and so the multi-value form
+   * below can be more than one element). Whatever's inside, the control
+   * carrying the value itself is always the one with id `value`.
+   *
+   * Three shapes, all of which accept anything typed - see the note on
+   * createKeywordNameSelect below - so a keyword or value we don't have
+   * tabled is never blocked:
+   *
+   * - a space-separated list of known codes (DSPATR) - free-text box plus a
+   *   checkbox per code;
+   * - a single known code (COLOR, EDTCDE, ...) - creatable combobox;
+   * - anything else - the plain free-text box.
    */
-  const createValueControl = (id, keywordName, value) => {
+  const createValueRow = (keywordName, value) => {
+    const row = document.createElement(`div`);
     const options = keywordValueOptions(keywordName);
 
     if (!options) {
-      return createInputField(id, value);
+      row.appendChild(createInputField(`value`, value));
+      return row;
+    }
+
+    if (MULTI_VALUE_KEYWORDS.has(keywordName)) {
+      // The text box stays the value's one source of truth and stays fully
+      // editable - the checkboxes just toggle codes in and out of it. That
+      // keeps a hand-written DSPATR(HI ZZ) editable as typed (ZZ isn't a
+      // code we know, and survives untouched) instead of needing the two
+      // controls reconciled at confirm time.
+      const input = createInputField(`value`, value);
+      row.appendChild(input);
+
+      /** @type {{code: string, checkbox: Element}[]} */
+      const checkboxes = [];
+
+      const syncCheckboxes = () => {
+        const codes = valueTokens(input.value).map(token => token.toUpperCase());
+
+        checkboxes.forEach(({ code, checkbox }) => {
+          if (codes.includes(code)) {
+            checkbox.setAttribute(`checked`, `true`);
+          } else {
+            checkbox.removeAttribute(`checked`);
+          }
+        });
+      };
+
+      options.forEach(option => {
+        const checkbox = document.createElement(`vscode-checkbox`);
+        checkbox.setAttribute(`label`, option.label);
+        checkbox.style.display = `block`;
+        checkbox.style.marginTop = `0.25em`;
+
+        checkbox.addEventListener(`change`, () => {
+          // Rebuilt from what's actually in the box, so codes we don't know
+          // about keep their place in the value instead of being dropped.
+          const remaining = valueTokens(input.value).filter(token => token.toUpperCase() !== option.value);
+          const next = (checkbox.checked ? [...remaining, option.value] : remaining).join(` `);
+
+          input.value = next;
+          input.setAttribute(`value`, next);
+          syncCheckboxes();
+        });
+
+        checkboxes.push({ code: option.value, checkbox });
+        row.appendChild(checkbox);
+      });
+
+      // Typing in the box drives the checkboxes, not just the other way
+      // round. vscode-textfield emits its own vsc-input alongside the native
+      // input event, so listen for both rather than betting on which one
+      // survives the shadow boundary.
+      [`input`, `vsc-input`, `change`].forEach(eventName => input.addEventListener(eventName, syncCheckboxes));
+      syncCheckboxes();
+
+      return row;
     }
 
     const select = document.createElement(`vscode-single-select`);
-    select.setAttribute(`id`, id);
+    select.setAttribute(`id`, `value`);
     select.combobox = true;
     select.creatable = true;
     select.filter = `contains`;
@@ -2785,7 +2878,8 @@ function editKeyword(onUpdate, keyword) {
       select.value = value;
     }
 
-    return select;
+    row.appendChild(select);
+    return row;
   };
 
   const createKeywordNameSelect = (id, value) => {
@@ -2844,26 +2938,28 @@ function editKeyword(onUpdate, keyword) {
   group.appendChild(createLabel(`Keyword`, `keyword`));
   group.appendChild(nameSelect);
 
-  let valueControl = createValueControl(`value`, keywordName, keyword ? (keyword.value || ``) : ``);
+  let valueRow = createValueRow(keywordName, keyword ? (keyword.value || ``) : ``);
   group.appendChild(createLabel(`Value`, `value`));
-  group.appendChild(valueControl);
+  group.appendChild(valueRow);
 
   // Which control the Value row needs depends on which keyword is selected,
   // so picking a different name has to rebuild it in place.
   nameSelect.addEventListener(`change`, () => {
     const newName = (nameSelect.value || ``).toUpperCase();
-    const currentValue = valueControl.value || ``;
+    const currentValue = valueRow.querySelector(`#value`).value || ``;
     const options = keywordValueOptions(newName);
 
     // Carry the value over to the new control only when it could still be
-    // right: anything goes in a free-text box, but offering a dropdown of
-    // COLOR's values while it still holds a leftover EDTCDE code would be
-    // claiming a value we know is wrong.
-    const stillValid = !options || options.some(option => option.value === currentValue.toUpperCase());
+    // right: anything goes in a free-text box, and every code in a
+    // multi-value list has to be one the new keyword knows, but offering a
+    // dropdown of COLOR's values while it still holds a leftover EDTCDE code
+    // would be claiming a value we know is wrong.
+    const codes = MULTI_VALUE_KEYWORDS.has(newName) ? valueTokens(currentValue) : [currentValue];
+    const stillValid = !options || codes.every(code => options.some(option => option.value === code.toUpperCase()));
 
-    const replacement = createValueControl(`value`, newName, stillValid ? currentValue : ``);
-    group.replaceChild(replacement, valueControl);
-    valueControl = replacement;
+    const replacement = createValueRow(newName, stillValid ? currentValue : ``);
+    group.replaceChild(replacement, valueRow);
+    valueRow = replacement;
   });
 
   // Real DDS conditions a field/keyword with up to 3 OR'd groups (each an
