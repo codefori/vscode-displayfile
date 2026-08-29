@@ -6,6 +6,8 @@ Check [Keep a Changelog](http://keepachangelog.com/) for recommendations on how 
 
 ## [Unreleased]
 
+## [0.4.1] - 2026-08-29
+
 ### Fixed
 
 - A constant that ran past column 80 was written out as one over-long line, which DDS truncates - so a long line of instruction text silently lost its tail (and its closing quote) on the way to the file. Constants now wrap onto continuation lines with a trailing `-` in column 80, the same way long keywords already did, and read back identically.

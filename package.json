@@ -3,7 +3,7 @@
   "displayName": "DSPF Editor",
   "description": "Visual drag-and-drop designer for IBM i DDS display files (.dspf) and printer files (.prtf)",
   "publisher": "DanielLong",
-  "version": "0.4.0",
+  "version": "0.4.1",
   "license": "MIT",
   "repository": {
     "type": "git",
