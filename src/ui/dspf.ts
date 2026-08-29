@@ -386,6 +386,54 @@ export class DisplayFile {
     }
   }
 
+  /** Line breaks are threaded through the keyword scanner as characters,
+   * so they have to be ones that can never turn up in real DDS source -
+   * a printable marker (a '~' in a constant, say) would be swallowed as a
+   * line break and shift every conditioning line after it. */
+  private static readonly NEW_LINE_MARK = `\u0000`;
+  private static readonly CONTINUED_MARK = `\u0001`;
+
+  /**
+   * Joins one field's (or record's) functions-area lines into the single
+   * string parseKeywords scans, resolving DDS continuations as it goes.
+   *
+   * A `+` or `-` as the last character of the functions area continues the
+   * entry on the next line rather than ending it:
+   *
+   *   `-`  resumes at position 45 exactly, blanks included - so the split
+   *        can fall anywhere at all, mid-word or inside a quoted literal,
+   *        and the two halves rejoin exactly as written.
+   *   `+`  resumes at the next line's first NON-blank character, which is
+   *        how a multi-value keyword is usually coded (the continuation is
+   *        indented to line up under the value above it).
+   *
+   * Either way the entry runs straight on across the break, so the break is
+   * emitted as CONTINUED_MARK - the scanner keeps building the same word or
+   * literal through it, where a NEW_LINE_MARK would have ended it. A
+   * trailing `+`/`-` on the very last line has nothing to continue onto, so
+   * it's ordinary text.
+   */
+  static joinKeywordLines(keywordStrings: string[]): string {
+    let joined = ``;
+    let resumeAtFirstNonBlank = false;
+
+    keywordStrings.forEach((keywordString, index) => {
+      let text = keywordString.replace(/\s+$/, ``);
+      if (resumeAtFirstNonBlank) { text = text.replace(/^\s+/, ``); }
+
+      const lastCharacter = text[text.length - 1];
+      const isContinued = index < keywordStrings.length - 1 && (lastCharacter === `+` || lastCharacter === `-`);
+
+      joined += isContinued
+        ? text.substring(0, text.length - 1) + DisplayFile.CONTINUED_MARK
+        : text + DisplayFile.NEW_LINE_MARK;
+
+      resumeAtFirstNonBlank = isContinued && lastCharacter === `+`;
+    });
+
+    return joined;
+  }
+
   /**
    * @param firstConditionalLine The first conditioningStrings line a
    *   keyword is allowed to claim - for a FIELD's keywords this is 2, since
@@ -401,9 +449,10 @@ export class DisplayFile {
       conditions: []
     };
 
-    const newLineMark = `~`;
+    const newLineMark = DisplayFile.NEW_LINE_MARK;
+    const continuedMark = DisplayFile.CONTINUED_MARK;
 
-    let value = keywordStrings.join(newLineMark) + newLineMark;
+    let value = DisplayFile.joinKeywordLines(keywordStrings);
     let conditionalLine = 1;
 
     if (value.length > 0) {
@@ -427,11 +476,13 @@ export class DisplayFile {
 
       for (let i = 0; i < value.length; i++) {
         switch (value[i]) {
-          case `+`:
-          case `-`:
-            if (value[i + 1] !== newLineMark) {
-              innerValue += value[i];
-            }
+          // A continued line break is invisible to everything below: the
+          // word/literal being built carries straight on across it (its
+          // continuation character has already been stripped by
+          // joinKeywordLines). Only the physical-line counter moves, so
+          // conditioning columns keep lining up with their real lines.
+          case continuedMark:
+            conditionalLine += 1;
             break;
 
           case `'`:
@@ -565,26 +616,34 @@ export class DisplayFile {
     // columns a keyword line leaves blank) padded out to column 44, so the
     // keyword itself starts at 45 - where parse() slices it back out from.
     const firstPrefix = `     A${lastCondition}                            `;
-    // A continuation line carries no conditioning of its own: blank columns
-    // fold in as nothing (see appendConditionLine), so the keyword keeps
-    // exactly the indicators coded on the line(s) before it.
+
+    lines.push(...DisplayFile.wrapFunctions(text, firstPrefix));
+
+    return lines;
+  }
+
+  /**
+   * Lays one entry - a keyword, or a constant's quoted literal - out across
+   * the functions area (positions 45-80), continuing onto as many lines as
+   * it takes rather than running past column 80, where DDS would truncate
+   * it.
+   *
+   * Every continued line ends in a `-` in column 80, which resumes at
+   * position 45 of the next line with nothing inserted between the two
+   * halves: the split can fall anywhere - mid-word, between a keyword's
+   * name and its `(`, or inside a quoted literal - and joinKeywordLines
+   * puts it back together exactly as it was. `+` would be prettier for a
+   * multi-value keyword, but it swallows the continuation's leading blanks,
+   * so it can't carry a literal that happens to break on one.
+   *
+   * A continuation line carries no conditioning of its own: blank columns
+   * fold in as nothing (see appendConditionLine), so the entry keeps
+   * exactly the indicators coded on the line(s) before it.
+   */
+  private static wrapFunctions(text: string, firstPrefix: string): string[] {
+    const lines: string[] = [];
     const continuationPrefix = `     A`.padEnd(DisplayFile.FUNCTIONS_COLUMN);
 
-    // The keyword name and its opening bracket can't be split: parseKeywords
-    // ends a keyword at the newline, so a break before the '(' would read
-    // back as a bare name plus an orphaned value. Nothing real gets close to
-    // this, but if it ever did, one over-long line loses less than a value
-    // silently detached from its keyword.
-    const unsplittable = keyword.value ? keyword.name.length + 1 : text.length;
-
-    if (text.length <= DisplayFile.FUNCTIONS_WIDTH || unsplittable > DisplayFile.FUNCTIONS_WIDTH - 1) {
-      lines.push(firstPrefix + text);
-      return lines;
-    }
-
-    // '-' continues the value at column 45 of the next line with nothing
-    // inserted between the two halves, so the split can fall anywhere -
-    // mid-word, or inside a quoted literal - and still reassemble exactly.
     let remaining = text;
     let prefix = firstPrefix;
 
@@ -625,10 +684,11 @@ export class DisplayFile {
     const conditionColumns = DisplayFile.conditionLines(field.conditions)[0];
 
     if (field.displayType === `const`) {
-      const value = field.value;
-      newLines.push(
-        `     A${conditionColumns}                      ${y}${x}'${value}'`,
-      );
+      // Positions 45-80 again: the literal starts at 45, right after the
+      // line/position columns, and wraps onto continuation lines when it's
+      // longer than the functions area can hold.
+      const prefix = `     A${conditionColumns}                      ${y}${x}`;
+      newLines.push(...DisplayFile.wrapFunctions(`'${field.value ?? ``}'`, prefix));
     } else if (displayType && field.name) {
       const definitionType = field.type;
       const length = String(field.length).padStart(5);

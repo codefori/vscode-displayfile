@@ -79,6 +79,33 @@ export declare class DisplayFile {
      * all contributes nothing (covers blank continuation lines cleanly).
      */
     static appendConditionLine(groups: ConditionGroup[], conditionColumns: string): void;
+    /** Line breaks are threaded through the keyword scanner as characters,
+     * so they have to be ones that can never turn up in real DDS source -
+     * a printable marker (a '~' in a constant, say) would be swallowed as a
+     * line break and shift every conditioning line after it. */
+    private static readonly NEW_LINE_MARK;
+    private static readonly CONTINUED_MARK;
+    /**
+     * Joins one field's (or record's) functions-area lines into the single
+     * string parseKeywords scans, resolving DDS continuations as it goes.
+     *
+     * A `+` or `-` as the last character of the functions area continues the
+     * entry on the next line rather than ending it:
+     *
+     *   `-`  resumes at position 45 exactly, blanks included - so the split
+     *        can fall anywhere at all, mid-word or inside a quoted literal,
+     *        and the two halves rejoin exactly as written.
+     *   `+`  resumes at the next line's first NON-blank character, which is
+     *        how a multi-value keyword is usually coded (the continuation is
+     *        indented to line up under the value above it).
+     *
+     * Either way the entry runs straight on across the break, so the break is
+     * emitted as CONTINUED_MARK - the scanner keeps building the same word or
+     * literal through it, where a NEW_LINE_MARK would have ended it. A
+     * trailing `+`/`-` on the very last line has nothing to continue onto, so
+     * it's ordinary text.
+     */
+    static joinKeywordLines(keywordStrings: string[]): string;
     /**
      * @param firstConditionalLine The first conditioningStrings line a
      *   keyword is allowed to claim - for a FIELD's keywords this is 2, since
@@ -94,6 +121,11 @@ export declare class DisplayFile {
         keywords: Keyword[];
         conditions: Conditional[];
     };
+    /** DDS is fixed-column: a line's functions area (where keywords are
+     * coded) is positions 45-80, i.e. 0-indexed 44 up to the 80-character
+     * line length - the same slice parse() reads keywords back out of. */
+    private static readonly FUNCTIONS_COLUMN;
+    private static readonly FUNCTIONS_WIDTH;
     /**
      * Renders a ConditionGroup[] into DDS conditioning-indicator column
      * strings (10 chars each: 1 relator + up to 3 indicators of 3 chars) -
@@ -107,6 +139,25 @@ export declare class DisplayFile {
      */
     private static conditionLines;
     static getLinesForKeyword(keyword: Keyword): string[];
+    /**
+     * Lays one entry - a keyword, or a constant's quoted literal - out across
+     * the functions area (positions 45-80), continuing onto as many lines as
+     * it takes rather than running past column 80, where DDS would truncate
+     * it.
+     *
+     * Every continued line ends in a `-` in column 80, which resumes at
+     * position 45 of the next line with nothing inserted between the two
+     * halves: the split can fall anywhere - mid-word, between a keyword's
+     * name and its `(`, or inside a quoted literal - and joinKeywordLines
+     * puts it back together exactly as it was. `+` would be prettier for a
+     * multi-value keyword, but it swallows the continuation's leading blanks,
+     * so it can't carry a literal that happens to break on one.
+     *
+     * A continuation line carries no conditioning of its own: blank columns
+     * fold in as nothing (see appendConditionLine), so the entry keeps
+     * exactly the indicators coded on the line(s) before it.
+     */
+    private static wrapFunctions;
     static getLinesForField(field: FieldInfo): string[];
     getRangeForField(recordFormat: string, fieldName: string): DdsLineRange | undefined;
     updateField(recordFormat: string, originalFieldName: string | undefined, fieldInfo: FieldInfo): DdsUpdate | undefined;

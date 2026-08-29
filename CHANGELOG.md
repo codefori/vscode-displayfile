@@ -6,6 +6,14 @@ Check [Keep a Changelog](http://keepachangelog.com/) for recommendations on how 
 
 ## [Unreleased]
 
+### Fixed
+
+- A constant that ran past column 80 was written out as one over-long line, which DDS truncates - so a long line of instruction text silently lost its tail (and its closing quote) on the way to the file. Constants now wrap onto continuation lines with a trailing `-` in column 80, the same way long keywords already did, and read back identically.
+- A keyword whose value started too far across the line to fit even its name and `(` was left as one over-long line, because a split there couldn't be read back. Keyword names can now be split too, so nothing is ever written past column 80.
+- A `+` continuation (`COLHDG('FIRST' 'SECOND' +` / `'THIRD')`) resumes at the next line's first non-blank character, but the indentation lining that continuation up under the value above it was being read as part of the value, leaving a run of blanks in the middle of it. `+` and `-` continuations are now told apart: `-` keeps every blank from position 45 on, `+` drops the indentation.
+- A keyword name split across a continuation (`WDWTIT-` / `LE('Detail')`) was read as two separate keywords, one of them a fragment.
+- A constant containing a `~` lost the character, and shifted the conditioning indicators of every keyword coded after it onto the wrong keyword - `~` was the parser's own internal marker for a line break.
+
 ## [0.4.0] - 2026-08-22
 
 ### Added

@@ -712,3 +712,155 @@ describe(`conditioning indicators (AND/OR groups)`, () => {
     expect(reparsedKeyword?.value).toBe(`HI`);
   });
 });
+
+describe(`continuation lines (an entry that doesn't fit in positions 45-80)`, () => {
+  const parseField = (lines: string[]) => {
+    const dds = new DisplayFile();
+    dds.parse([`     A          R FMT1`, ...lines]);
+    return dds.formats.find(f => f.name === `FMT1`)!.fields[0];
+  };
+
+  const constant = (value: string, y = 3, x = 2) => {
+    const field = new FieldInfo(0, `TEXT1`);
+    field.displayType = `const`;
+    field.position = { x, y };
+    field.value = value;
+    return field;
+  };
+
+  it(`wraps a constant too long for column 80 onto continuation lines, and round-trips it`, () => {
+    const value = `Press F3 to exit, F5 to refresh the list, or F12 to return to the previous display`;
+
+    const lines = DisplayFile.getLinesForField(constant(value));
+
+    expect(lines.length).toBeGreaterThan(1);
+    lines.forEach(line => expect(line.length).toBeLessThanOrEqual(80));
+    lines.slice(0, -1).forEach(line => expect(line.endsWith(`-`)).toBe(true));
+    // Every continuation resumes at position 45 (0-indexed 44), carrying no
+    // conditioning, name or position columns of its own.
+    lines.slice(1).forEach(line => expect(line.substring(0, 44).trim()).toBe(`A`));
+
+    const reparsed = parseField(lines);
+    expect(reparsed.value).toBe(value);
+    expect(reparsed.position).toEqual({ x: 2, y: 3 });
+  });
+
+  it(`keeps a wrapped constant's conditioning indicators and its trailing keywords`, () => {
+    const field = constant(`Delete confirmed - the record you selected has been removed from the file`);
+    field.conditions = [{ indicators: [{ indicator: 55, negate: false }] }];
+    field.keywords = [{ name: `COLOR`, value: `RED`, conditions: [] }];
+
+    const reparsed = parseField(DisplayFile.getLinesForField(field));
+
+    expect(reparsed.value).toBe(field.value);
+    expect(reparsed.conditions).toEqual(field.conditions);
+    expect(reparsed.keywords).toEqual(field.keywords);
+  });
+
+  it(`leaves a constant that already fits on one line alone`, () => {
+    expect(DisplayFile.getLinesForField(constant(`Opt`, 1, 3))).toEqual([
+      `     A                                  1  3'Opt'`,
+    ]);
+  });
+
+  it(`wraps a keyword whose name alone runs past column 80, splitting the name itself`, () => {
+    // The name and its '(' used to be treated as unsplittable, so a keyword
+    // conditioned down to a sliver of the functions area was written as one
+    // over-long line that DDS truncates at 80.
+    const keyword = { name: `WDWTITLE`, value: `*TEXT 'Confirm delete' *COLOR WHT`, conditions: [] };
+
+    const lines = DisplayFile.getLinesForKeyword(keyword);
+
+    lines.forEach(line => expect(line.length).toBeLessThanOrEqual(80));
+
+    const reparsed = parseField([`     A            FLD1           5A  O  1  1`, ...lines]).keywords;
+    expect(reparsed.find(k => k.name === `WDWTITLE`)?.value).toBe(keyword.value);
+  });
+
+  it(`reads a '-' continuation back from position 45, blanks included`, () => {
+    // '-' resumes at position 45 exactly, so leading blanks are part of the
+    // literal - the only way to break a constant on one of its own spaces.
+    const field = parseField([
+      ddsLine({ y: `1`, x: `2`, keywords: `'Enter the customer number-` }),
+      ddsLine({ keywords: `  and press Enter'` }),
+    ]);
+
+    expect(field.value).toBe(`Enter the customer number  and press Enter`);
+  });
+
+  it(`reads a '+' continuation back from the next line's first non-blank character`, () => {
+    // '+' drops the indentation that lines a multi-value keyword's
+    // continuation up under the value above it.
+    const field = parseField([
+      ddsLine({ name: `FLD1`, len: `5`, type: `A`, inout: `O`, y: `1`, x: `1` }),
+      ddsLine({ keywords: `COLHDG('FIRST' 'SECOND' +` }),
+      ddsLine({ keywords: `       'THIRD')` }),
+    ]);
+
+    expect(field.keywords.find(k => k.name === `COLHDG`)?.value).toBe(`'FIRST' 'SECOND' 'THIRD'`);
+  });
+
+  it(`reassembles a keyword name split across a continuation`, () => {
+    const field = parseField([
+      ddsLine({ name: `FLD1`, len: `5`, type: `A`, inout: `O`, y: `1`, x: `1` }),
+      ddsLine({ keywords: `WDWTIT-` }),
+      ddsLine({ keywords: `LE('Detail')` }),
+    ]);
+
+    expect(field.keywords).toEqual([{ name: `WDWTITLE`, value: `'Detail'`, conditions: [] }]);
+  });
+
+  it(`keeps a keyword's conditioning lined up with the physical line it was coded on`, () => {
+    // A continued line is invisible to the entry it continues, but it's
+    // still a physical line - miscounting it slides every keyword's
+    // conditioning columns onto the wrong keyword.
+    const field = parseField([
+      ddsLine({ name: `FLD1`, len: `5`, type: `A`, inout: `O`, y: `1`, x: `1` }),
+      ddsLine({ cond: condCols(` `, [{ num: 40 }]), keywords: `WDWTITLE('A very long window title that-` }),
+      ddsLine({ keywords: ` has to be continued')` }),
+      ddsLine({ cond: condCols(` `, [{ num: 41 }]), keywords: `DSPATR(HI)` }),
+    ]);
+
+    expect(field.keywords).toEqual([
+      { name: `WDWTITLE`, value: `'A very long window title that has to be continued'`, conditions: [{ indicators: [{ indicator: 40, negate: false }] }] },
+      { name: `DSPATR`, value: `HI`, conditions: [{ indicators: [{ indicator: 41, negate: false }] }] },
+    ]);
+  });
+
+  it(`treats a trailing '+'/'-' with no line after it as ordinary text`, () => {
+    const field = parseField([
+      ddsLine({ y: `1`, x: `2`, keywords: `'Net change +/-'` }),
+    ]);
+
+    expect(field.value).toBe(`Net change +/-`);
+  });
+
+  it(`round-trips a constant and a keyword value at every length, whatever the split lands on`, () => {
+    // The split can fall on a space, on the quote, or mid-word depending on
+    // the length, and every one of those has to come back byte-for-byte.
+    const alphabet = `abcdefg hijk lmnopq rs tuvwxyz 0123456789 `;
+
+    for (let length = 1; length <= 200; length++) {
+      let value = ``;
+      while (value.length < length) { value += alphabet; }
+      value = value.substring(0, length).trimEnd().padEnd(length, `x`);
+
+      const constantLines = DisplayFile.getLinesForField(constant(value));
+      constantLines.forEach(line => expect(line.length).toBeLessThanOrEqual(80));
+      expect(parseField(constantLines).value).toBe(value);
+
+      const keywordLines = DisplayFile.getLinesForKeyword({ name: `WDWTITLE`, value: `*TEXT '${value}'`, conditions: [] });
+      keywordLines.forEach(line => expect(line.length).toBeLessThanOrEqual(80));
+      const reparsed = parseField([ddsLine({ name: `FLD1`, len: `5`, type: `A`, inout: `O`, y: `1`, x: `1` }), ...keywordLines]);
+      expect(reparsed.keywords.find(k => k.name === `WDWTITLE`)?.value).toBe(`*TEXT '${value}'`);
+    }
+  });
+
+  it(`round-trips a constant containing a '~'`, () => {
+    // '~' used to be the parser's own line-break marker, so a constant
+    // carrying one lost it and shifted every conditioning line after it.
+    const reparsed = parseField(DisplayFile.getLinesForField(constant(`Approx. ~50 records`)));
+
+    expect(reparsed.value).toBe(`Approx. ~50 records`);
+  });
+});
