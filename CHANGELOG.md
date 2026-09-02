@@ -6,6 +6,8 @@ Check [Keep a Changelog](http://keepachangelog.com/) for recommendations on how 
 
 ## [Unreleased]
 
+## [0.5.0] - 2026-09-01
+
 ### Added
 
 - The keyword editor now explains the keyword you've selected: a line under the Keyword field giving the level(s) it's legal at and one sentence on what it does (`Record level. Displays the record as a window: its size and position, or the window record it shares.`). The levels and wording come from IBM's DDS references, and the table covers every keyword in the name list except a handful those references don't carry at all (`PAGSIZ`, `OVERFLOW`, `UDATE`, ...). It's help text, not a gate - a keyword we have nothing tabled for, including anything you type yourself, simply shows no line, and nothing about the value is checked.
