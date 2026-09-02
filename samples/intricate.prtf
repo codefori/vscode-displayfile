@@ -1,0 +1,25 @@
+     A                                      PAGSIZ(66 132)
+     A          R HEADER
+     A                                  1  2'Acme Invoice Report'
+     A            RUNDATE        8L 0O  1100
+     A                                      DATFMT(*ISO)
+     A                                      DATE
+     A          R COLHDR
+     A                                      SPACEB(2)
+     A                                     2'Item'
+     A                                    20'Description'
+     A                                  3 50'Quantity'
+     A                                    60'Price'
+     A          R DETAIL
+     A            ITEM          15A  O     2
+     A            DESC          30A  O    20
+     A            QTY            3D 0O  1 55
+     A            PRICE          9D 2O    65
+     A                                      SPACEA(1)
+     A                                     2'Notes:'
+     A          R FOOTER
+     A                                      SKIPB(64)
+     A                                     2'Page'
+     A            PAGENBR        3D 0O     8
+     A                                      PAGNBR
+     A                                   100'Confidential'

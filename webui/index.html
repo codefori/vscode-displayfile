@@ -1,4 +1,8 @@
 <head>
+  <!-- Must run before {main} (a classic, blocking script) parses below, since
+       main.js reads this once at load to decide Design vs Preview - a panel
+       is one or the other for its whole lifetime, never both. -->
+  <script>window.__mode__ = "{mode}";</script>
   <script src="{elements}" type="module"></script>
   <script src="{konva}"></script>
   <script src="{main}"></script>
@@ -9,33 +13,70 @@
 <!-- https://vscode-elements.github.io/guides/getting-started/ -->
 
 <body style="padding: 0em;">
-  <div>
-    <!-- The reason the tabs are seperate is because -->
-    <!-- we don't want multiple canvases -->
-    <vscode-tabs id="recordFormatTabs" selected-index="0" fixed-pane="start">
-    </vscode-tabs>
-
-
-    <div style="display: flex; height: 100vh;">
-      <!-- Left Sidebar -->
-      <div style="width: 20%; background-color: var(--vscode-sideBar-background);">
-        <div id="recordFormatSidebar">
+  <div style="display: flex; flex-direction: column; height: 100vh;">
+    <!-- A tab strip doesn't scale to files with many record formats - can't
+         see them all, and long names get clipped. A filterable dropdown scrolls
+         and can be typed into instead. -->
+    <div style="padding: 0.5em 1em; border-bottom: 1px solid var(--vscode-editorGroup-border); flex: 0 0 auto;">
+      <div id="formatToolbarRow" style="display: flex; align-items: center; gap: 0.5em; margin-bottom: 0.5em;">
+        <!-- vscode-button's icon is fixed at 16px with no way to resize it, so
+             these use vscode-icon's own action-icon mode (a clickable icon,
+             styled like VS Code's native toolbar icons) to get a 32px icon. -->
+        <vscode-icon id="newFormatButton" name="add" action-icon size="32" label="Add a new record format" title="Add a new record format"></vscode-icon>
+        <vscode-icon id="renameFormatButton" name="edit" action-icon size="32" label="Rename the current record format" title="Rename the current record format"></vscode-icon>
+        <vscode-icon id="deleteFormatButton" name="trash" action-icon size="32" label="Delete the current record format" title="Delete the current record format"></vscode-icon>
+        <!-- Hidden until "New Format" is clicked. -->
+        <div id="newFormatForm" style="display: none; align-items: center; gap: 0.5em;">
+          <vscode-textfield id="newFormatName" placeholder="Format name" style="width: 12em;"></vscode-textfield>
+          <vscode-button id="newFormatConfirm" icon="check" title="Create">Create</vscode-button>
         </div>
-        <div id="keywordEditorArea">
+        <!-- Hidden until "Rename Format" is clicked. -->
+        <div id="renameFormatForm" style="display: none; align-items: center; gap: 0.5em;">
+          <vscode-textfield id="renameFormatName" placeholder="Format name" style="width: 12em;"></vscode-textfield>
+          <vscode-button id="renameFormatConfirm" icon="check" title="Rename">Rename</vscode-button>
+        </div>
+      </div>
+      <div style="display: flex; align-items: center; gap: 0.5em;">
+        <!-- No "selected format" in the Preview view - there's no dropdown,
+             just the Composed Formats checklist in the left sidebar. -->
+        <div id="selectedFormatRow" style="display: flex; align-items: center; gap: 0.5em; flex: 1;">
+          <vscode-label for="recordFormatSelect">Selected Format:</vscode-label>
+          <div id="recordFormatSelector" style="flex: 1; max-width: 24em;"></div>
+        </div>
+        <!-- Only shown when DSPSIZ defines more than one size (e.g. *DS3 and *DS4 together). -->
+        <div id="dspSizeToggle" style="display: none;"></div>
+      </div>
+    </div>
+
+    <div style="display: flex; flex: 1; min-height: 0;">
+      <!-- Left Sidebar -->
+      <div style="width: 20%; background-color: var(--vscode-sideBar-background); overflow-y: auto;">
+        <div id="recordFormatSidebar">
         </div>
       </div>
 
       <!-- Main Content -->
-      <div style="flex: 1; display: flex; justify-content: center; margin-top: 3em;">
-        <div id="container"></div>
+      <!-- justify-content: flex-start (not center) - a canvas wider than this
+           panel (a wide PAGSIZ printer page, or a large DSPSIZ alternate size)
+           must default to showing column 1, not be centered. Centering an
+           overflowing flex item is also a known CSS trap: browsers often
+           can't scroll all the way to the item's start, only its end. -->
+      <div style="flex: 1; display: flex; justify-content: flex-start; align-items: flex-start; padding: 2em; overflow: auto;">
+        <div id="containerFrame" style="border: 1px solid var(--vscode-editorGroup-border); border-radius: 4px; padding: 1px; background: var(--vscode-editor-background); box-shadow: 0 2px 8px rgba(0, 0, 0, 0.3);">
+          <div id="container"></div>
+        </div>
       </div>
 
       <!-- Right Sidebar -->
-      <div style="width: 20%; background-color: var(--vscode-sideBar-background);">
+      <div style="width: 20%; background-color: var(--vscode-sideBar-background); overflow-y: auto;">
         <div id="fieldInfoSidebar">
         </div>
+        <!-- Both field- and format-level keyword trees now live in this same
+             right panel (as tabs), so their shared "add/edit keyword" form
+             belongs here too, not off in the left sidebar. -->
+        <div id="keywordEditorArea">
+        </div>
       </div>
-    </div></div>
-
+    </div>
   </div>
 </body>

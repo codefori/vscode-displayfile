@@ -7,10 +7,44 @@
  * @typedef {import("konva").default.Stage} Stage
  * @typedef {import("konva").default.Group} Group
  * @typedef {import("konva").default.Layer} Layer
- * @typedef {{label: string, id?: string, value: string}} Property 
+ * @typedef {{label: string, id?: string, value: string, options?: {label: string, value: string}[]}} Property
  * @typedef {{[key: string]: string}} NewProperties
- * @typedef {{title: string, html: string|Element, open?: boolean}} Section
+ * @typedef {{title: string, html: string|Element}} Tab
  */
+
+// Surfaces uncaught errors directly in the webview, since the extension host's
+// devtools picker doesn't reliably target this webview over others (e.g. chat).
+function showRendererError(error) {
+  // vscode-elements' own combobox has a known internal bug: typing a filter
+  // that matches no options while keyboard navigation is still "active"
+  // leaves it reading a stale index and throwing from its own keydown
+  // listener. That listener is registered by the library directly on the
+  // DOM element, invoked by the browser itself - not something our code
+  // calls into, so it can't be try/caught at the call site. This is the
+  // only place it can be intercepted, so treat anything thrown from inside
+  // that library as non-fatal noise: log it, but never surface the banner.
+  if (error && typeof error.stack === `string` && error.stack.includes(`vscode-elements.js`)) {
+    console.warn(`Ignored an internal vscode-elements error:`, error);
+    return;
+  }
+
+  let banner = document.getElementById(`rendererErrorBanner`);
+  if (!banner) {
+    banner = document.createElement(`div`);
+    banner.id = `rendererErrorBanner`;
+    banner.style.background = `#5a1d1d`;
+    banner.style.color = `white`;
+    banner.style.padding = `0.5em 1em`;
+    banner.style.fontFamily = `monospace`;
+    banner.style.whiteSpace = `pre-wrap`;
+    document.body.prepend(banner);
+  }
+
+  banner.textContent = (error && error.stack) ? error.stack : String(error);
+}
+
+window.addEventListener(`error`, (event) => showRendererError(event.error || event.message));
+window.addEventListener(`unhandledrejection`, (event) => showRendererError(event.reason));
 
 const colours = {
   RED: `red`,
@@ -48,7 +82,62 @@ const GLOBAL_RECORD_FORMAT = `_GLOBAL`;
 
 const vscode = acquireVsCodeApi();
 
-const pxwPerChar = 8.45;
+// Design and Preview are two separate registered custom editors for the same
+// file (see package.json's customEditors / src/extension.ts) sharing this
+// same webview bundle - baked into the served HTML per-panel (index.html's
+// inline `window.__mode__` script, set from RendererWebview's `mode`), since
+// a panel is one or the other for its whole lifetime, never both.
+const isPreviewMode = (typeof window !== `undefined` && window.__mode__) === `preview`;
+
+// Cmd/Ctrl+Z (and redo) pressed while focus is inside this webview never
+// reaches VS Code's own keybinding service - focus has moved into this
+// webview's own separate browser context, so the keystroke is purely a DOM
+// event here unless something forwards it. Every canvas edit already goes
+// through workspace.applyEdit (see RendererWebview.onDidGetMessage), so the
+// underlying document's real undo/redo stack already has everything - this
+// just asks the extension host to invoke it. Skipped while an actual text
+// input has focus (e.g. typing a field's name) so that keystroke undoes the
+// user's typing there instead, via the input's own native undo.
+document.addEventListener(`keydown`, (event) => {
+  const target = event.target;
+  const isEditableTarget = !!(target && (
+    target.tagName === `INPUT` ||
+    target.tagName === `TEXTAREA` ||
+    target.isContentEditable
+  ));
+  if (isEditableTarget) { return; }
+
+  const modifier = event.metaKey || event.ctrlKey;
+  if (!modifier) { return; }
+
+  const key = event.key.toLowerCase();
+  const isRedo = (key === `z` && event.shiftKey) || (key === `y` && event.ctrlKey);
+  const isUndo = key === `z` && !event.shiftKey;
+  if (!isUndo && !isRedo) { return; }
+
+  event.preventDefault();
+  vscode.postMessage({ command: isRedo ? `redo` : `undo` });
+});
+
+const FONT_SIZE = 14;
+const FONT_FAMILY = `Consolas, "Liberation Mono", Menlo, Courier, monospace`;
+
+// Measures the font's real glyph advance width so the pixel grid used for
+// field positions/widths stays in lockstep with what the canvas actually draws.
+/**
+ * @param {string} fontFamily
+ * @param {number} fontSize
+ */
+function measureCharWidth(fontFamily, fontSize) {
+  const canvas = document.createElement(`canvas`);
+  const ctx = canvas.getContext(`2d`);
+  ctx.font = `${fontSize}px ${fontFamily}`;
+
+  const sample = `0`.repeat(50);
+  return ctx.measureText(sample).width / sample.length;
+}
+
+const pxwPerChar = measureCharWidth(FONT_FAMILY, FONT_SIZE);
 const pxhPerLine = 20;
 const pxhPerChar = 12.5;
 
@@ -58,10 +147,15 @@ function snapToFixedGrid(x, y) {
   return {x: newX, y: newY};
 }
 
-function gridCordsToFieldCords(x, y) {
+/**
+ * @param {{x: number, y: number}} [offset] the same window offset getElement
+ *   rendered this field with - subtracted back out so a dragged window
+ *   field's saved position stays relative to the window, not the screen.
+ */
+function gridCordsToFieldCords(x, y, offset = { x: 0, y: 0 }) {
   return {
-    x: Math.round(x / pxwPerChar) + 1,
-    y: Math.round(y / pxhPerLine) + 1
+    x: Math.round(x / pxwPerChar) + 1 - offset.x,
+    y: Math.round(y / pxhPerLine) + 1 - offset.y
   };
 }
 
@@ -76,75 +170,217 @@ function heightInP(x) {
 /** @type {DisplayFile|undefined} */
 let activeDocument = undefined;
 
-/** @type {"dds.dspf"|undefined} */
+/** @type {"dds.dspf"|"dds.prtf"|undefined} */
 let activeDocumentType = undefined;
 
 /** @type {string|undefined} */
 let lastSelectedFormat = undefined;
 
+// Other formats to render layered on top of lastSelectedFormat, previewing how
+// the screen looks when an RPG program WRITEs several formats without clearing
+// between them. Only offered/rendered in the Preview view (isPreviewMode).
+/** @type {Set<string>} */
+let composedFormats = new Set();
+
+// Which DSPSIZ size is currently selected for rendering, when a file defines
+// more than one (e.g. *DS3 and *DS4 together). Only meaningful/shown when
+// there's actually a choice to make.
+/** @type {string|undefined} */
+let dspSizeQualifier = undefined;
+
 /** @type {Stage|undefined} */
 let existingStage = undefined;
 
+// Which indicators are currently "on", for previewing conditional display in
+// the renderer. This is session-only UI state - indicator values aren't part
+// of the DDS source, they're supplied at runtime, so this never gets saved.
+/** @type {Set<number>} */
+let activeIndicators = new Set();
+
+// Which tab of the left (Composed Formats/Indicators) sidebar is selected.
+// Toggling a checkbox in either tab triggers a full re-render of this
+// sidebar (see setWindowForFormat -> updateRecordFormatSidebar) - without
+// remembering this, that re-render would always snap back to the first tab.
+let recordFormatSidebarTabIndex = 0;
+
 /**
- * @param {DisplayFile} newDoc 
- * @param {"dds.dspf"} type //TODO: support dds.prtf
+ * DDS's real model: a field/keyword's conditions are OR'd-together
+ * AND-groups (up to 3 groups, via continuation lines - see
+ * DisplayFile.appendConditionLine) - satisfied if ANY one group has ALL of
+ * its own indicators satisfied.
+ * @param {import('./dspf.d.ts').ConditionGroup[]} conditions
+ */
+function indicatorsSatisfied(conditions) {
+  if (conditions.length === 0) { return true; }
+
+  return conditions.some(group =>
+    group.indicators.every(cond => activeIndicators.has(cond.indicator) !== cond.negate)
+  );
+}
+
+/**
+ * @returns {number[]} every indicator referenced anywhere in the document, sorted.
+ */
+function getReferencedIndicators() {
+  /** @type {Set<number>} */
+  const indicators = new Set();
+
+  const collect = (conditions) => conditions.forEach(group => group.indicators.forEach(c => indicators.add(c.indicator)));
+
+  (activeDocument?.formats || []).forEach(format => {
+    format.keywords.forEach(keyword => collect(keyword.conditions));
+    format.fields.forEach(field => {
+      collect(field.conditions);
+      field.keywords.forEach(keyword => collect(keyword.conditions));
+    });
+  });
+
+  return Array.from(indicators).sort((a, b) => a - b);
+}
+
+/**
+ * @param {DisplayFile} newDoc
+ * @param {"dds.dspf"|"dds.prtf"} type
  */
 function loadDDS(newDoc, type, withRerender = true) {
   activeDocument = newDoc;
   activeDocumentType = type;
 
-  if (withRerender) {
-    const validFormats = activeDocument.formats.filter(format => format.name !== GLOBAL_RECORD_FORMAT);
-
-    setTabs(validFormats.map(format => format.name), lastSelectedFormat);
-
-    const chosenFormat = lastSelectedFormat || (validFormats[0] ? validFormats[0].name : undefined);
-    if (chosenFormat) {
-      setWindowForFormat(chosenFormat);
+  if (!withRerender) {
+    // A full re-render didn't happen here - field-level edits (see
+    // sendFieldUpdate) update the canvas/right sidebar optimistically on
+    // their own instead, to avoid the flicker of a full teardown/rebuild.
+    // But a keyword's conditions could change which indicators are
+    // referenced, so the left sidebar's Indicators tab still needs to
+    // catch up now that activeDocument has the fresh data.
+    if (isPreviewMode) {
+      updatePreviewSidebar();
+    } else {
+      updateRecordFormatSidebar();
     }
+    return;
+  }
+
+  const validNames = activeDocument.formats
+    .filter(format => format.name !== GLOBAL_RECORD_FORMAT)
+    .map(format => format.name);
+
+  if (isPreviewMode) {
+    // No dropdown/"selected format" here - just drop any composed selections
+    // for formats that no longer exist, then re-render whatever's left checked.
+    composedFormats.forEach(name => {
+      if (!validNames.includes(name)) { composedFormats.delete(name); }
+    });
+    renderComposedPreview();
+    return;
+  }
+
+  // Never leave the selector on a blank/stale format - fall back to the
+  // first one whenever there isn't already a valid selection (first load,
+  // or the previously-selected format got renamed/deleted).
+  const chosenFormat = (lastSelectedFormat && validNames.includes(lastSelectedFormat))
+    ? lastSelectedFormat
+    : validNames[0];
+
+  setTabs(validNames, chosenFormat);
+
+  if (chosenFormat) {
+    setWindowForFormat(chosenFormat);
   }
 }
 
 /**
- * @param {string} chosenFormat 
+ * Blanks the canvas and both side panels - used whenever there's nothing
+ * sensible to render (an unrecognized format name) or something unexpected
+ * went wrong while trying to. Never shows an error to the user for this;
+ * that's the whole point of showing nothing instead.
  */
-function setWindowForFormat(chosenFormat) {
-  let renderWidth = 80;
-  let renderHeight = 24;
+function clearRenderedScreen() {
+  if (existingStage) {
+    existingStage.destroy();
+    existingStage = undefined;
+  }
+  document.getElementById(`recordFormatSidebar`).innerHTML = ``;
+  document.getElementById(`fieldInfoSidebar`).innerHTML = ``;
+}
 
-  const globalFormat = activeDocument.formats.find(currentFormat => currentFormat.name === `GLOBAL`);
+function setWindowForFormat(chosenFormat) {
   const selectedFormat = activeDocument.formats.find(currentFormat => currentFormat.name === chosenFormat);
 
   if (!selectedFormat) {
-    console.error(`Format ${chosenFormat} not found`);
+    // Not a real error the user needs to see (e.g. still typing into the
+    // format combobox) - just show nothing rather than leaving stale
+    // content on screen or logging a visible error.
+    clearRenderedScreen();
     return;
   }
 
-  switch (activeDocumentType) {
-    case `dds.dspf`:
-      if (globalFormat) {
-        const displaySize = globalFormat.keywords.find(keyword => keyword.name === `DSPSIZ`);
-
-        if (displaySize) {
-          const parts = parseParms(displaySize.value);
-
-          if (parts.length >= 2) {
-            const [height, width] = parts;
-
-            renderWidth = widthInP(Number(width));
-            renderHeight = heightInP(Number(height));
-          } else if (parts.length === 1) {
-            switch (parts[0].toUpperCase()) {
-              case '*DS4':
-                renderWidth = 132;
-                renderHeight = 27;
-                break;
-            }
-          }
-        }
-      }
-      break;
+  // Belt and braces around the whole render: if anything here throws for a
+  // reason we haven't anticipated (including inside a third-party component
+  // we don't control), fall back to a blank screen instead of surfacing the
+  // global error banner for what's still just "couldn't render this".
+  try {
+    renderFormat(chosenFormat, selectedFormat);
+  } catch (error) {
+    console.warn(`Failed to render format "${chosenFormat}":`, error);
+    clearRenderedScreen();
   }
+}
+
+/**
+ * The Preview view's render entry point - unlike Design's setWindowForFormat,
+ * there's no single "selected" format (no dropdown in this view at all): the
+ * canvas just shows every format currently checked in the Composed Formats
+ * tab, layered together, all read-only. Called on load and whenever the
+ * checked formats or active indicators change.
+ */
+function renderComposedPreview() {
+  try {
+    const globalFormat = activeDocument.formats.find(format => format.name === GLOBAL_RECORD_FORMAT);
+    const { width: renderWidth, height: renderHeight } = getPageSize(globalFormat);
+
+    let width = renderWidth * pxwPerChar;
+    let height = renderHeight * pxhPerLine;
+
+    if (existingStage) { existingStage.destroy(); }
+
+    existingStage = new Konva.Stage({ container: `container`, width, height });
+    const bg = new Konva.Rect({ x: 0, y: 0, width, height, fill: colours.BLK });
+    let layer = new Konva.Layer({ id: `preview` });
+    layer.add(bg);
+
+    const formatsToRender = Array.from(composedFormats)
+      .map(name => activeDocument.formats.find(format => format.name === name))
+      .filter(Boolean);
+
+    // Windows always draw on top of everything else - Array#sort is stable,
+    // so this only reorders windows-vs-non-windows and otherwise preserves
+    // the order the formats were checked in.
+    formatsToRender.sort((a, b) => Number(a.isWindow) - Number(b.isWindow));
+
+    // Routing through renderSelectedFormat (not addFieldsToLayer directly)
+    // means a composed format that's itself a window still gets its
+    // border/background drawn.
+    formatsToRender.forEach(format => {
+      renderSelectedFormat(layer, format, true);
+    });
+
+    existingStage.add(layer);
+    updatePreviewSidebar();
+    setActiveField();
+  } catch (error) {
+    console.warn(`Failed to render preview:`, error);
+    clearRenderedScreen();
+  }
+}
+
+/**
+ * @param {string} chosenFormat
+ * @param {RecordInfo} selectedFormat
+ */
+function renderFormat(chosenFormat, selectedFormat) {
+  const globalFormat = activeDocument.formats.find(currentFormat => currentFormat.name === GLOBAL_RECORD_FORMAT);
+  const { width: renderWidth, height: renderHeight } = getPageSize(globalFormat);
 
   let width = renderWidth * pxwPerChar;
   let height = renderHeight * pxhPerLine;
@@ -177,21 +413,25 @@ function setWindowForFormat(chosenFormat) {
 
   layer.add(bg);
 
-  renderSelectedFormat(layer, selectedFormat);
+  // This is the Design view's render path - always exactly one format,
+  // fully editable. Composing several formats together read-only is the
+  // Preview view's job entirely now (see renderComposedPreview).
+  lastSelectedFormat = chosenFormat;
+  renderSelectedFormat(layer, selectedFormat, false);
+
   existingStage.add(layer);
 
-  updateRecordFormatSidebar(selectedFormat, globalFormat);
+  updateRecordFormatSidebar();
   setActiveField();
 }
 
 /**
- * 
- * @param {Layer} layer 
- * @param {RecordInfo} [format] 
+ *
+ * @param {Layer} layer
+ * @param {RecordInfo} [format]
+ * @param {boolean} [displayOnly] render read-only, for a format composed alongside the focused one
  */
-function renderSelectedFormat(layer, format) {
-  lastSelectedFormat = format.name;
-
+function renderSelectedFormat(layer, format, displayOnly = false) {
   /** @type {RecordInfo|undefined} */
   let windowFormat;
 
@@ -201,11 +441,7 @@ function renderSelectedFormat(layer, format) {
   /** @type {FieldInfo|undefined} */
   let windowTitle;
 
-  /** @type {RecordInfo} */
-  let recordFormat;
-  if (format) {
-    recordFormat = activeDocument.formats.find(currentFormat => currentFormat.name === lastSelectedFormat);
-  }
+  const recordFormat = format;
 
   if (recordFormat) {
     if (recordFormat.isWindow) {
@@ -246,13 +482,14 @@ function renderSelectedFormat(layer, format) {
           name: `WINDOWTITLE`,
           displayType: `const`,
           type: `A`,
-          primitiveType: `char`
+          primitiveType: `char`,
+          keywords: []
         };
 
         let xPositionValue = `center`;
         let yPositionValue = `top`;
 
-        parts = Render.parseParms(windowInfo.value);
+        parts = parseParms(windowInfo.value);
 
         parts.forEach((part, index) => {
           switch (part.toUpperCase()) {
@@ -265,6 +502,7 @@ function renderSelectedFormat(layer, format) {
               value: parts[index + 1],
               conditions: []
             });
+            break;
           case `*DSPATR`:
             windowTitle.keywords.push({
               name: `DSPATR`,
@@ -286,75 +524,139 @@ function renderSelectedFormat(layer, format) {
           }
         });
 
-        // If no color is found, the default is blue.
-        if (!windowTitle.keywords.find(keyword => keyword.name === `COLOR`)) {
-          windowTitle.keywords.push({
-            name: `COLOR`,
-            value: `BLU`,
-            conditions: []
-          });
+        // No *TEXT means nothing to actually show - WDWTITLE without it
+        // isn't meaningful DDS, but don't crash rendering the rest of the
+        // window over it.
+        if (!windowTitle.value) {
+          windowTitle = undefined;
+        } else {
+          // If no color is found, the default is blue.
+          if (!windowTitle.keywords.find(keyword => keyword.name === `COLOR`)) {
+            windowTitle.keywords.push({
+              name: `COLOR`,
+              value: `BLU`,
+              conditions: []
+            });
+          }
+
+          const txtLength = windowTitle.value.length;
+
+          // Relative to the window's own top-left corner (1, 1) - the
+          // window's own draggable Group (below) supplies its actual screen
+          // position via its own transform, so these no longer fold
+          // windowConfig.baseX/baseY in directly.
+          const yPosition = (yPositionValue === `top` ? 0 : windowConfig.baseHeight);
+          let xPosition = 1;
+
+          switch (xPositionValue) {
+          case `center`:
+            xPosition = 1 + Math.floor((windowConfig.baseWidth / 2) - (txtLength / 2));
+            break;
+          case `right`:
+            xPosition = 1 + windowConfig.baseWidth - txtLength;
+            break;
+          case `left`:
+            xPosition = 1;
+            break;
+          }
+
+          windowTitle.position = {
+            x: xPosition,
+            y: yPosition
+          };
         }
-
-        const txtLength = windowTitle.value.length;
-
-        const yPosition = (windowConfig.baseY) + (yPositionValue === `top` ? 0 : windowConfig.baseHeight);
-        let xPosition = (windowConfig.baseX + 1);
-
-        switch (xPositionValue) {
-        case `center`:
-          xPosition = (windowConfig.baseX + 1) + Math.floor((windowConfig.baseWidth / 2) - (txtLength / 2));
-          break;
-        case `right`:
-          xPosition = (windowConfig.baseX + 1) + windowConfig.baseWidth - txtLength;
-          break;
-        case `left`:
-          xPosition = (windowConfig.baseX + 1);
-          break;
-        }
-
-        windowTitle.position = {
-          x: xPosition,
-          y: yPosition
-        };
       }
     }
   }
 
+  /** @type {Group|undefined} everything belonging to this window (border,
+   * resize handle, title, its own fields) lives inside this one draggable
+   * Group, so dragging it moves all of that together, live. */
+  let windowGroup;
+
   if (windowFormat) {
-    // If this is a window, add the window CSS
-      if (windowConfig) {
-        const windowColor = colors[windowConfig.color] || colors.BLU;
+    if (windowConfig) {
+      windowGroup = new Konva.Group({
+        id: `${format.name}::window`,
+        x: windowConfig.x,
+        y: windowConfig.y,
+        draggable: !displayOnly,
+      });
 
-        /** @type {Rect} */
-        const windowRect = new Konva.Rect({
-          id: windowFormat.name,
-          x: windowConfig.x,
-          y: windowConfig.y,
-          width: windowConfig.width,
-          height: windowConfig.height,
-          stroke: windowColor,
-        });
+      windowGroup.on(`dragmove`, () => {
+        const snapped = snapToFixedGrid(windowGroup.x(), windowGroup.y());
+        windowGroup.x(snapped.x);
+        windowGroup.y(snapped.y);
+      });
 
-        layer.add(windowRect);
+      windowGroup.on(`dragend`, () => {
+        const absolute = windowGroup.absolutePosition();
+        const snapped = snapToFixedGrid(absolute.x, absolute.y);
+        windowGroup.absolutePosition(snapped);
+
+        // Inverts windowConfig.x/y's own widthInP(baseX)/heightInP(baseY) -
+        // NOT gridCordsToFieldCords, which assumes a field's "-1" convention
+        // (pixel = widthInP(pos - 1)), one character off from a window's own
+        // start-position convention (pixel = widthInP(base), no "-1").
+        const startX = Math.round(snapped.x / pxwPerChar);
+        const startY = Math.round(snapped.y / pxhPerLine);
+
+        sendWindowResize(format, startY, startX, windowConfig.baseHeight, windowConfig.baseWidth);
+      });
+
+      const windowColor = colours[windowConfig.color] || colours.BLU;
+
+      // Windows have an opaque interior in a real 5250 session - they cover
+      // whatever's underneath, not just outline it. Matters most when this
+      // format is composed on top of another one that already drew content
+      // in the same area.
+      /** @type {Rect} */
+      const windowRect = new Konva.Rect({
+        id: `windowBorder`,
+        x: 0,
+        y: 0,
+        width: windowConfig.width,
+        height: windowConfig.height,
+        fill: colours.BLK,
+        stroke: windowColor,
+      });
+
+      windowGroup.add(windowRect);
+
+      if (!displayOnly) {
+        windowGroup.add(createWindowResizeHandle(windowGroup, format, windowConfig));
       }
 
-      if (windowTitle) {
-        console.log(`TODO: add window title: ${windowFormat}`);
-        // const windowContent = this.getContent(windowTitle);
-
-        // css += windowContent.css;
-        // body += windowContent.body;
-      }
-
-      if (windowFormat.name !== format.name) {
-        renderSelectedFormat(layer, windowFormat);
-      }
+      layer.add(windowGroup);
     }
 
-  // TODO: handle window
+    if (windowTitle) {
+      // Never independently editable/draggable on canvas - it's derived
+      // from the WDWTITLE keyword's value, not a real field of its own -
+      // but it's a child of the window's own group, so it still moves with
+      // the window when it's dragged.
+      windowGroup.add(getElement(windowTitle, true, windowFormat.name));
+    }
+
+    if (windowFormat.name !== format.name) {
+      // WINDOW(REF): this record borrows its size/border from windowFormat,
+      // but windowFormat's own fields still render layered into the same
+      // window bounds - into the same group (so they move with it too),
+      // not by re-deriving/re-drawing windowFormat's chrome a second time
+      // (already drawn above, from windowFormat's own keywords).
+      addFieldsToLayer(windowGroup, windowFormat, displayOnly, { x: -1, y: -1 });
+    }
+  }
+
   // TODO: make format optional
   if (format) {
-    addFieldsToLayer(layer, format);
+    // A window record's own fields are coded relative to the window's own
+    // top-left corner (row 1, column 1 = the window's first interior row/
+    // column) - rendered as children of the window's own Group (whose
+    // transform supplies the screen position) instead of baking an absolute
+    // offset into each field, so dragging the window moves its fields and
+    // title along with it live.
+    addFieldsToLayer(windowGroup || layer, format, displayOnly, windowGroup ? { x: -1, y: -1 } : { x: 0, y: 0 });
   }
 }
 
@@ -363,7 +665,60 @@ function renderSelectedFormat(layer, format) {
  * @param {*} layer 
  * @param {RecordInfo} format 
  */
-function addFieldsToLayer(layer, format) {
+/**
+ * How many screen columns a field actually occupies - matches the same
+ * length rule getElement uses to render it (const's literal text, or the
+ * field's own length floored at 1 for zero-length referenced fields).
+ * @param {FieldInfo} field
+ */
+function fieldDisplayLength(field) {
+  if (field.displayType === `const`) {
+    return (field.value || ``).length;
+  }
+  return Math.max(1, field.length || 0);
+}
+
+/**
+ * Finds fields/constants on the same row whose columns overlap, or sit
+ * immediately next to each other with no blank column between them - on a
+ * real 5250 display that doesn't render/behave correctly, even though it's
+ * visually indistinguishable from a normal 1-column gap in this renderer.
+ * @param {FieldInfo[]} fields
+ * @returns {Set<FieldInfo>} every field involved in at least one conflict
+ */
+function findTouchingFields(fields) {
+  const conflicting = new Set();
+  const positioned = fields.filter(field => field.displayType !== `hidden` && field.position.x > 0 && field.position.y > 0);
+
+  for (let i = 0; i < positioned.length; i++) {
+    for (let j = i + 1; j < positioned.length; j++) {
+      const a = positioned[i];
+      const b = positioned[j];
+      if (a.position.y !== b.position.y) { continue; }
+
+      const aEnd = a.position.x + fieldDisplayLength(a) - 1;
+      const bEnd = b.position.x + fieldDisplayLength(b) - 1;
+
+      const overlaps = a.position.x <= bEnd && b.position.x <= aEnd;
+      const noGap = (b.position.x === aEnd + 1) || (a.position.x === bEnd + 1);
+
+      if (overlaps || noGap) {
+        conflicting.add(a);
+        conflicting.add(b);
+      }
+    }
+  }
+
+  return conflicting;
+}
+
+function addFieldsToLayer(layer, format, displayOnly = false, offset = { x: 0, y: 0 }) {
+  // getElement's render offset (above) and its drag-end offset are different
+  // once a window's fields render inside its own draggable Group - see
+  // getElement's own doc comment for why. getWindowOffset is always the
+  // right one for drag-end, and a no-op {0, 0} for anything not a window.
+  const dragOffset = getWindowOffset(format);
+
   const subfileFormat = format.keywords.find(keyword => keyword.name === `SFLCTL`);
   // TODO: handle when subFileFormat is found
 
@@ -375,27 +730,22 @@ function addFieldsToLayer(layer, format) {
 
     if (subfileRecord) {
       const subfileFields = subfileRecord.fields.filter(field => field.displayType !== `hidden` && field.position.x > 0 && field.position.y > 0);
-      
+      // Checked once against the template row - every repeated row has the same conflicts.
+      const subfileConflicting = findTouchingFields(subfileFields);
+
       const low = Math.min(...subfileFields.map(field => field.position.y));
       const high = Math.max(...subfileFields.map(field => field.position.y));
       const linesPerItem = (high - low) + 1;
-      
+
       for (let row = 0; row < rows; row++) {
         subfileFields.forEach(field => {
           // TODO: these fields cant be edited in this format
           let subField = JSON.parse(JSON.stringify(field));
           subField.position.y += (row * linesPerItem);
-          let canDisplay = true;
 
-          // field.conditions.forEach(cond => {
-          //   if (this.indicators[cond.indicator] !== (cond.negate ? false : true)) {
-          //     canDisplay = false;
-          //   }
-          // });
-          
-          if (canDisplay) {
+          if (indicatorsSatisfied(field.conditions)) {
             subField.name = `${field.name}_${row}`;
-            const content = getElement(subField, true);
+            const content = getElement(subField, true, subfileRecord.name, subfileConflicting.has(field), offset, dragOffset);
             layer.add(content);
           }
         });
@@ -403,23 +753,15 @@ function addFieldsToLayer(layer, format) {
 
 
     } else {
-      throw new Error(`Unable to find SFLCTL format ${subfileFormat} from ${recordFormat}`);
+      throw new Error(`Unable to find SFLCTL format ${subfileFormat.value} from ${format.name}`);
     }
   }
 
   const fields = format.fields.filter(field => field.displayType !== `hidden`);
+  const conflicting = findTouchingFields(fields);
   fields.forEach(field => {
-    let canDisplay = true;
-
-    field.conditions.forEach(cond => {
-      // TODO: indicator support?
-      // if (this.indicators[cond.indicator] !== (cond.negate ? false : true)) {
-      //   canDisplay = false;
-      // }
-    });
-
-    if (canDisplay) {
-      const content = getElement(field);
+    if (indicatorsSatisfied(field.conditions)) {
+      const content = getElement(field, displayOnly, format.name, conflicting.has(field), offset, dragOffset);
       layer.add(content);
     }
   });
@@ -431,30 +773,233 @@ function addFieldsToLayer(layer, format) {
  * @returns {Konva.Group|undefined}
  */
 function renderSpecificField(fieldInfo) {
-  const existingField = existingStage.findOne(`#${fieldInfo.name}`);
+  // Editing always targets the focused tab, even when other formats are
+  // composed alongside it - see getElement()'s formatName param.
+  const existingField = existingStage.findOne(`#${elementId(lastSelectedFormat, fieldInfo.name)}`);
 
   if (existingField) {
     existingField.destroy();
   }
 
-  const formatLayer = existingStage.findOne(`#${lastSelectedFormat}`);
+  const format = activeDocument.formats.find(f => f.name === lastSelectedFormat);
+  // A window's own fields are children of its own draggable Group (see
+  // renderSelectedFormat), not the top-level layer directly - find that
+  // instead, so an optimistically-updated field still moves with the window
+  // if it's dragged before the next full rerender.
+  const container = format && format.isWindow
+    ? existingStage.findOne(`#${lastSelectedFormat}::window`)
+    : existingStage.findOne(`#${lastSelectedFormat}`);
 
-  if (formatLayer) {
-    const content = getElement(fieldInfo);
-    formatLayer.add(content);
+  if (container) {
+    const renderOffset = format && format.isWindow ? { x: -1, y: -1 } : { x: 0, y: 0 };
+    const content = getElement(fieldInfo, false, lastSelectedFormat, false, renderOffset, getWindowOffset(format));
+    container.add(content);
 
     return content;
   }
 }
 
 /**
- * @param {FieldInfo} fieldInfo 
+ * The {x, y} offset a record's own fields need shifted by if it's a window -
+ * {0, 0} otherwise. A window's fields are coded relative to its own top-left
+ * corner (row 1, column 1 = the window's own first interior row/column), not
+ * the screen. Mirrors the WINDOW(REF) resolution in renderSelectedFormat (a
+ * window can borrow another record's size instead of coding its own).
+ * @param {RecordInfo|undefined} format
+ * @returns {{x: number, y: number}}
  */
-function getElement(fieldInfo, displayOnly = false) {
+function getWindowOffset(format) {
+  if (!format || !format.isWindow) { return { x: 0, y: 0 }; }
+
+  const windowFormat = format.windowReference
+    ? activeDocument.formats.find(f => f.name === format.windowReference)
+    : format;
+
+  if (!windowFormat) { return { x: 0, y: 0 }; }
+
+  return { x: windowFormat.windowSize.x - 1, y: windowFormat.windowSize.y - 1 };
+}
+
+function elementId(formatName, fieldName) {
+  return `${formatName}::${fieldName}`;
+}
+
+/**
+ * A small draggable handle on a field's right edge that resizes its length -
+ * dragging horizontally only, snapped to the character grid, with a floor of
+ * 1 character. Invisible until hovered, so it doesn't visually clutter the
+ * field the rest of the time.
+ * @param {Group} group the field's own Konva group - not yet added to a layer
+ * @param {FieldInfo} fieldInfo
+ * @param {number} initialWidthPx
+ */
+function createResizeHandle(group, fieldInfo, initialWidthPx) {
+  // A fixed 6px handle on a very narrow field (e.g. 1 character, ~8px wide)
+  // covers almost the whole thing, leaving no room to grab the field's body
+  // to move it instead of resize it. Capping the handle at half the field's
+  // width guarantees some body is always left to grab, while leaving normal-
+  // width fields (roughly 2+ characters) exactly as they were.
+  const handleWidth = Math.max(2, Math.min(6, Math.floor(initialWidthPx / 2)));
+
+  const handle = new Konva.Rect({
+    id: `resizeHandle`,
+    x: initialWidthPx - handleWidth,
+    y: 0,
+    width: handleWidth,
+    height: pxhPerChar,
+    fill: colours.WHT,
+    opacity: 0,
+    draggable: true,
+  });
+
+  handle.on(`mouseenter`, () => {
+    handle.opacity(0.4);
+    const stage = handle.getStage();
+    if (stage) { stage.container().style.cursor = `ew-resize`; }
+  });
+  handle.on(`mouseleave`, () => {
+    handle.opacity(0);
+    const stage = handle.getStage();
+    if (stage) { stage.container().style.cursor = `default`; }
+  });
+
+  handle.on(`dragmove`, () => {
+    const snappedX = Math.max(pxwPerChar, Math.round(handle.x() / pxwPerChar) * pxwPerChar);
+    handle.x(snappedX);
+    handle.y(0);
+
+    const newWidth = snappedX + handleWidth;
+    const bg = group.findOne(`#bg`);
+    const label = group.findOne(`#label`);
+    if (bg) { bg.width(newWidth); }
+    if (label) { label.width(newWidth); }
+  });
+
+  handle.on(`dragend`, () => {
+    fieldInfo.length = Math.max(1, Math.round(handle.x() / pxwPerChar));
+    sendFieldUpdate(lastSelectedFormat, fieldInfo.name, fieldInfo);
+  });
+
+  return handle;
+}
+
+/**
+ * Rewrites a window's WINDOW keyword to the explicit
+ * (startY startX sizeY sizeX) form and sends it as a format-header update -
+ * shared by both the window-move and window-resize handlers below. Also how
+ * a WINDOW(*DFT ...) or WINDOW(REF) window becomes independently draggable/
+ * resizable going forward: touching it via drag/resize always writes the
+ * full explicit form, same as the runtime would have resolved it to.
+ * @param {RecordInfo} format
+ * @param {number} startY
+ * @param {number} startX
+ * @param {number} sizeY
+ * @param {number} sizeX
+ */
+function sendWindowResize(format, startY, startX, sizeY, sizeX) {
+  const newValue = `${startY} ${startX} ${sizeY} ${sizeX}`;
+  const hasWindowKeyword = format.keywords.some(keyword => keyword.name === `WINDOW`);
+
+  const newKeywords = format.keywords.map(keyword =>
+    keyword.name === `WINDOW` ? { ...keyword, value: newValue } : keyword
+  );
+  if (!hasWindowKeyword) {
+    newKeywords.push({ name: `WINDOW`, value: newValue, conditions: [] });
+  }
+
+  sendFormatHeaderUpdate(format.name, newKeywords);
+}
+
+/**
+ * A small draggable handle on a window's bottom-right corner that resizes
+ * it - both dimensions at once, snapped to the character grid, with a floor
+ * of 1 character/line. Invisible until hovered, same as a field's own
+ * length-resize handle.
+ * @param {Group} windowGroup the window's own draggable Konva group - bg is
+ *   looked up on it by id, same pattern as a field's own resize handle
+ * @param {RecordInfo} format
+ * @param {{baseX: number, baseY: number, width: number, height: number}} windowConfig
+ */
+function createWindowResizeHandle(windowGroup, format, windowConfig) {
+  const handleSize = 8;
+
+  const handle = new Konva.Rect({
+    id: `windowResizeHandle`,
+    x: windowConfig.width - handleSize,
+    y: windowConfig.height - handleSize,
+    width: handleSize,
+    height: handleSize,
+    fill: colours.WHT,
+    opacity: 0,
+    draggable: true,
+  });
+
+  handle.on(`mouseenter`, () => {
+    handle.opacity(0.4);
+    const stage = handle.getStage();
+    if (stage) { stage.container().style.cursor = `nwse-resize`; }
+  });
+  handle.on(`mouseleave`, () => {
+    handle.opacity(0);
+    const stage = handle.getStage();
+    if (stage) { stage.container().style.cursor = `default`; }
+  });
+
+  handle.on(`dragmove`, () => {
+    const snappedX = Math.max(pxwPerChar, Math.round(handle.x() / pxwPerChar) * pxwPerChar);
+    const snappedY = Math.max(pxhPerLine, Math.round(handle.y() / pxhPerLine) * pxhPerLine);
+    handle.x(snappedX);
+    handle.y(snappedY);
+
+    const border = windowGroup.findOne(`#windowBorder`);
+    if (border) {
+      border.width(snappedX + handleSize);
+      border.height(snappedY + handleSize);
+    }
+  });
+
+  handle.on(`dragend`, () => {
+    // widthInP has no "-1" adjustment, heightInP's does (see windowConfig's
+    // own construction in renderSelectedFormat) - inverted here to recover
+    // the DDS-coded size from the rendered pixel size.
+    const sizeX = Math.max(1, Math.round((handle.x() + handleSize) / pxwPerChar));
+    const sizeY = Math.max(1, Math.round((handle.y() + handleSize) / pxhPerLine) + 1);
+
+    sendWindowResize(format, windowConfig.baseY, windowConfig.baseX, sizeY, sizeX);
+  });
+
+  return handle;
+}
+
+/**
+ * @param {FieldInfo} fieldInfo
+ * @param {boolean} [displayOnly]
+ * @param {string} [formatName] the record format this field belongs to, so its
+ *   canvas id doesn't collide with a same-named field in another composed format
+ * @param {boolean} [hasWarning] outlines the field in red - it touches or
+ *   overlaps another field/constant on the same row, which doesn't render
+ *   correctly on a real 5250 display
+ * @param {{x: number, y: number}} [offset] a window's own field is rendered
+ *   as a child of that window's own draggable Konva Group (see
+ *   renderSelectedFormat) - its DDS-coded position is relative to the
+ *   window's own top-left corner already, and the group's own transform
+ *   supplies the window's screen position, so this is always the constant
+ *   {x: -1, y: -1} (the same "-1" conversion getElement always does, just
+ *   with no window-position-dependent shift needed on top of it). Zero for
+ *   anything not inside a window.
+ * @param {{x: number, y: number}} [dragOffset] Konva's absolutePosition()
+ *   (used when a drag ends, below) always resolves through every ancestor's
+ *   transform to the stage's own coordinate space, regardless of nesting -
+ *   so converting a post-drag position back into this field's DDS-relative
+ *   position needs the window's actual position-dependent offset, not the
+ *   constant one above. Defaults to `offset` (correct for anything not
+ *   inside a window, where both are {0, 0} anyway).
+ */
+function getElement(fieldInfo, displayOnly = false, formatName = lastSelectedFormat, hasWarning = false, offset = { x: 0, y: 0 }, dragOffset = offset) {
   const boxInfo = {
-    id: fieldInfo.name,
-    x: widthInP(fieldInfo.position.x - 1),
-    y: heightInP(fieldInfo.position.y - 1),
+    id: elementId(formatName, fieldInfo.name),
+    x: widthInP(fieldInfo.position.x - 1 + offset.x),
+    y: heightInP(fieldInfo.position.y - 1 + offset.y),
     width: 0,
     height: heightInP(1),
     draggable: !displayOnly,
@@ -467,7 +1012,10 @@ function getElement(fieldInfo, displayOnly = false) {
     textDecoration: ``
   };
 
-  const keywords = fieldInfo.keywords;
+  // Only keywords whose conditioning indicators are currently satisfied apply -
+  // e.g. a field with two COLOR keywords gated by different indicators only
+  // shows whichever one is actually "on" in the current indicator preview.
+  const keywords = fieldInfo.keywords.filter(keyword => indicatorsSatisfied(keyword.conditions));
 
   keywords.forEach(keyword => {
     const key = keyword.name;
@@ -487,25 +1035,26 @@ function getElement(fieldInfo, displayOnly = false) {
       case `DATE`:
         const dateSep = keywords.find(keyword => keyword.name === `DATSEP`);
 
+        // DDS's own default when DATFMT is omitted is *JOB (whatever format
+        // the running job uses) - unknowable from a static file. *MDY is the
+        // closest thing to a traditional IBM i default, so fall back to it.
         const dateFormat = keywords.find(keyword => keyword.name === `DATFMT`);
-        if (dateFormat) {
-          labelInfo.value = dateFormats[dateFormat.value] || `?FORMAT?`;
+        const effectiveDateFormat = dateFormat ? dateFormat.value : `*MDY`;
+        labelInfo.value = dateFormats[effectiveDateFormat] || `?FORMAT?`;
 
-          if (dateSep && dateSep.value.toUpperCase() !== `*JOB`) {
-            labelInfo.value = labelInfo.value.replace(new RegExp(`[./-:]`, `g`), dateSep.value);
-          }
+        if (dateSep && dateSep.value.toUpperCase() !== `*JOB`) {
+          labelInfo.value = labelInfo.value.replace(new RegExp(`[./-:]`, `g`), dateSep.value);
         }
         break;
       case `TIME`:
         const sep = keywords.find(keyword => keyword.name === `TIMSEP`);
 
         const format = keywords.find(keyword => keyword.name === `TIMFMT`);
-        if (format) {
-          labelInfo.value = timeFormats[format.value] || `?FORMAT?`;
+        const effectiveTimeFormat = format ? format.value : `*HMS`;
+        labelInfo.value = timeFormats[effectiveTimeFormat] || `?FORMAT?`;
 
-          if (sep && sep.value.toUpperCase() !== `*JOB`) {
-            labelInfo.value = labelInfo.value.replace(new RegExp(`[./-:]`, `g`), sep.value);
-          }
+        if (sep && sep.value.toUpperCase() !== `*JOB`) {
+          labelInfo.value = labelInfo.value.replace(new RegExp(`[./-:]`, `g`), sep.value);
         }
         break;
       case `UNDERLINE`:
@@ -542,30 +1091,38 @@ function getElement(fieldInfo, displayOnly = false) {
 
   let padString = `_`;
 
-  switch (fieldInfo.primitiveType) {
-    case `char`:
-      switch (fieldInfo.displayType) {
-        case `input`: padString = `I`; break;
-        case `output`: padString = `O`; break;
-        case `both`: padString = `B`; break;
-      }
-      break;
-    case `decimal`:
-      switch (fieldInfo.displayType) {
-        case `input`: padString = `3`; break;
-        case `output`: padString = `6`; break;
-        case `both`: padString = `9`; break;
-      }
-      break;
+  // fieldInfo.primitiveType is only ever set by the server-side parser (see
+  // DisplayFile.parse in dspf.ts) - it never gets recomputed here after a
+  // client-side edit to Type, so an optimistic re-render right after changing
+  // Type would still be keying off the old value. Deriving straight from the
+  // DDS type character (the same D/Z/Y rule the parser uses) keeps this
+  // correct immediately, without needing primitiveType kept in sync at all.
+  const isDecimalType = fieldInfo.type === `D` || fieldInfo.type === `Z` || fieldInfo.type === `Y`;
+
+  if (isDecimalType) {
+    switch (fieldInfo.displayType) {
+      case `input`: padString = `3`; break;
+      case `output`: padString = `6`; break;
+      case `both`: padString = `9`; break;
+    }
+  } else {
+    switch (fieldInfo.displayType) {
+      case `input`: padString = `I`; break;
+      case `output`: padString = `O`; break;
+      case `both`: padString = `B`; break;
+    }
   }
 
-  const displayLength = fieldInfo.length > 0 && labelInfo.value.length < fieldInfo.length ? fieldInfo.length : labelInfo.value.length;
+  // A field referencing another field for its definition (REF/REFFLD) has no
+  // length of its own in this source - length 0 and no value would otherwise
+  // render as an invisible, zero-width box. Show at least a 1-char placeholder
+  // so there's a visible marker that a field exists here.
+  const displayLength = Math.max(1, fieldInfo.length > 0 && labelInfo.value.length < fieldInfo.length ? fieldInfo.length : labelInfo.value.length);
   const displayValue = labelInfo.value
     .replace(new RegExp(`''`, `g`), `'`)
     .padEnd(displayLength, padString);
 
   boxInfo.width = widthInP(displayLength);
-  labelInfo.width = widthInP(displayLength);
 
   let group = new Konva.Group(boxInfo);
 
@@ -615,7 +1172,7 @@ function getElement(fieldInfo, displayOnly = false) {
       y: newCords.y
     });
 
-    const fieldCords = gridCordsToFieldCords(newCords.x, newCords.y);
+    const fieldCords = gridCordsToFieldCords(newCords.x, newCords.y, dragOffset);
     fieldInfo.position.x = fieldCords.x;
     fieldInfo.position.y = fieldCords.y;
 
@@ -629,13 +1186,18 @@ function getElement(fieldInfo, displayOnly = false) {
     y: 0,
     width: boxInfo.width,
     height: pxhPerChar,
+    stroke: hasWarning ? colours.RED : undefined,
+    strokeWidth: hasWarning ? 1 : 0,
   }));
 
   // add text to the label
   group.add(new Konva.Text({
+    id: `label`,
     text: displayValue,
-    fontSize: 14,
-    fontFamily: `Consolas, "Liberation Mono", Menlo, Courier, monospace`,
+    width: boxInfo.width,
+    wrap: `none`,
+    fontSize: FONT_SIZE,
+    fontFamily: FONT_FAMILY,
     fill: labelInfo.colour,
     fontStyle: labelInfo.fontStyle,
     textDecoration: labelInfo.textDecoration,
@@ -645,6 +1207,15 @@ function getElement(fieldInfo, displayOnly = false) {
     group.on('pointerclick', () => {
       setActiveField(group, fieldInfo);
     });
+  }
+
+  // A small drag handle on the right edge resizes the field's length
+  // directly on the canvas. Only meaningful for a real field's own length -
+  // not a constant's (driven by its literal text) or a date/time field's
+  // (always fixed at 8 characters, whatever gets dragged here).
+  const resizable = !displayOnly && fieldInfo.displayType !== `const` && fieldInfo.type !== `L` && fieldInfo.type !== `T`;
+  if (resizable) {
+    group.add(createResizeHandle(group, fieldInfo, boxInfo.width));
   }
 
   return group;
@@ -681,47 +1252,192 @@ function parseParms(string) {
 }
 
 /**
- * @param {string[]} recordFormats 
+ * DSPSIZ can define one size (`24 80 *DS3`) or two, so the same screen can
+ * adapt to either terminal size at runtime (`24 80 *DS3 27 132 *DS4`). Parses
+ * it into a list of {height, width, qualifier} groups - one entry normally,
+ * two if both are defined. The trailing *DSx qualifier is optional on a
+ * given group (older DDS sometimes omits it).
+ * @param {string} value
+ * @returns {{height: number, width: number, qualifier: string|undefined}[]}
+ */
+function parseDspSizes(value) {
+  const parts = parseParms(value);
+  const sizes = [];
+
+  let i = 0;
+  while (i < parts.length) {
+    const height = Number(parts[i]);
+    const width = Number(parts[i + 1]);
+
+    if (Number.isNaN(height) || Number.isNaN(width)) { break; }
+
+    let qualifier;
+    if (parts[i + 2] && parts[i + 2].toUpperCase().startsWith(`*DS`)) {
+      qualifier = parts[i + 2].toUpperCase();
+      i += 3;
+    } else {
+      i += 2;
+    }
+
+    sizes.push({ height, width, qualifier });
+  }
+
+  return sizes;
+}
+
+/**
+ * Shows/hides and (re)builds the *DS3/*DS4 toggle in the top bar, based on
+ * how many sizes the current file's DSPSIZ actually defines.
+ * @param {{height: number, width: number, qualifier: string|undefined}[]} sizes
+ */
+function updateDspSizeToggle(sizes) {
+  const container = document.getElementById(`dspSizeToggle`);
+  container.innerHTML = ``;
+
+  if (sizes.length < 2) {
+    container.style.display = `none`;
+    return;
+  }
+
+  container.style.display = ``;
+
+  if (!sizes.some(s => s.qualifier === dspSizeQualifier)) {
+    dspSizeQualifier = sizes[0].qualifier;
+  }
+
+  const group = document.createElement(`vscode-radio-group`);
+
+  sizes.forEach((size, index) => {
+    const radio = document.createElement(`vscode-radio`);
+    radio.setAttribute(`name`, `dspSize`);
+    radio.setAttribute(`value`, size.qualifier || String(index));
+    radio.setAttribute(`label`, `${size.qualifier || `Size ${index + 1}`} (${size.height}x${size.width})`);
+    if (size.qualifier === dspSizeQualifier) {
+      radio.setAttribute(`checked`, `true`);
+    }
+
+    radio.addEventListener(`change`, () => {
+      dspSizeQualifier = size.qualifier;
+      if (isPreviewMode) {
+        renderComposedPreview();
+      } else if (lastSelectedFormat) {
+        setWindowForFormat(lastSelectedFormat);
+      }
+    });
+
+    group.appendChild(radio);
+  });
+
+  container.appendChild(group);
+}
+
+/**
+ * PAGSIZ(lines columns) sizes a printer file's page. Unlike DSPSIZ, it never
+ * defines more than one size - there's no *DSx-style alternate to choose
+ * between.
+ * @param {string} value
+ * @returns {{height: number, width: number}|undefined}
+ */
+function parsePagSize(value) {
+  const parts = parseParms(value);
+  const height = Number(parts[0]);
+  const width = Number(parts[1]);
+
+  if (Number.isNaN(height) || Number.isNaN(width)) { return undefined; }
+
+  return { height, width };
+}
+
+// Standard line-printer page size (CRTPRTF's PAGESIZE default) - used
+// whenever a printer file's global record doesn't code PAGSIZ at all.
+const DEFAULT_PAGE_SIZE = { height: 66, width: 132 };
+
+/**
+ * The canvas size (in characters) to render at, for either file type -
+ * DSPSIZ/its *DS3/*DS4 toggle for a display file, PAGSIZ (no toggle - it
+ * never has alternates) for a printer file. Shared by the Design view
+ * (renderFormat) and the Preview view (renderComposedPreview) so they can't
+ * drift out of sync on how a file's size is determined.
+ * @param {RecordInfo|undefined} globalFormat
+ * @returns {{width: number, height: number}}
+ */
+function getPageSize(globalFormat) {
+  if (activeDocumentType === `dds.prtf`) {
+    updateDspSizeToggle([]);
+
+    const pageSize = globalFormat?.keywords.find(keyword => keyword.name === `PAGSIZ`);
+    const size = pageSize ? parsePagSize(pageSize.value) : undefined;
+
+    return size || DEFAULT_PAGE_SIZE;
+  }
+
+  const displaySize = globalFormat?.keywords.find(keyword => keyword.name === `DSPSIZ`);
+  const sizes = displaySize ? parseDspSizes(displaySize.value) : [];
+
+  updateDspSizeToggle(sizes);
+
+  const chosenSize = sizes.length > 1
+    ? (sizes.find(s => s.qualifier === dspSizeQualifier) || sizes[0])
+    : sizes[0];
+
+  return chosenSize ? { width: chosenSize.width, height: chosenSize.height } : { width: 80, height: 24 };
+}
+
+/**
+ * @param {string[]} recordFormats
  */
 function setTabs(recordFormats, setActiveTab) {
-  // Defined like: <vscode-tabs id="recordFormatTabs" selected-index="0" fixed-pane="start">
-  const tabs = document.getElementById(`recordFormatTabs`);
-  tabs.innerHTML = recordFormats.map(f => 
-    `<vscode-tab-header name="${f}" slot="header">${f}</vscode-tab-header>`
-  ).join(``);
+  const container = document.getElementById(`recordFormatSelector`);
 
+  container.innerHTML = ``;
+
+  const select = document.createElement(`vscode-single-select`);
+  select.id = `recordFormatSelect`;
+  select.combobox = true;
+  select.filter = `contains`;
+  select.style.width = `100%`;
+
+  select.options = recordFormats.map(name => ({ label: name, value: name }));
   if (setActiveTab) {
-    tabs.setAttribute(`selected-index`, recordFormats.indexOf(setActiveTab));
+    select.value = setActiveTab;
   }
+
+  select.addEventListener(`change`, () => {
+    if (select.value) {
+      setWindowForFormat(select.value);
+    }
+  });
+
+  container.appendChild(select);
+
+  // Nothing to rename/delete when there are no real formats left. vscode-icon
+  // (used for these toolbar buttons, for a larger icon than vscode-button
+  // supports) has no built-in disabled state, so fake one.
+  const disabled = recordFormats.length === 0;
+  [`renameFormatButton`, `deleteFormatButton`].forEach(id => {
+    const button = document.getElementById(id);
+    if (button) {
+      button.toggleAttribute(`disabled`, disabled);
+      button.style.opacity = disabled ? `0.4` : ``;
+      button.style.pointerEvents = disabled ? `none` : ``;
+    }
+  });
 }
 
 
 window.addEventListener("message", (event) => {
   const command = event.data.command;
+  const fileType = event.data.fileType === `prtf` ? `dds.prtf` : `dds.dspf`;
   switch (command) {
     case `load`:
-      loadDDS(event.data.dds, `dds.dspf`);
+      loadDDS(event.data.dds, fileType);
       break;
     case 'update':
-      loadDDS(event.data.dds, `dds.dspf`, false);
+      loadDDS(event.data.dds, fileType, false);
       break;
   }
 });
 
-
-window.onload = () => {
-  const tabs = document.getElementById(`recordFormatTabs`);
-
-  tabs.addEventListener(`vsc-tabs-select`, (event) => {
-    console.log(event.detail.selectedIndex);
-
-    const selectedFormat = activeDocument && activeDocument.formats[event.detail.selectedIndex+1];
-
-    if (selectedFormat) {
-      setWindowForFormat(selectedFormat.name);
-    }
-  });
-};
 
 /** @type {Rect|undefined} */
 let lastActiveKonvaElement;
@@ -758,112 +1474,501 @@ function setActiveField(konvaElement, fieldInfo) {
 }
 
 /**
- * @param {RecordInfo} recordInfo
- * @param {RecordInfo} [globalInfo]
+ * The Design view's left sidebar - just Indicators. Composing other formats
+ * together is the Preview view's job now (see updatePreviewSidebar).
  */
-function updateRecordFormatSidebar(recordInfo, globalInfo) {
+function updateRecordFormatSidebar() {
   const sidebar = document.getElementById(`recordFormatSidebar`);
 
-  /** @type {Section[]} */
-  let sections = [];
+  /** @type {Tab[]} */
+  let tabs = [];
 
-  if (globalInfo) {
-    // Section for keywords that apply to the entire file
-    sections.push({
-      title: `File Keywords`,
-      html: createKeywordPanel(`keywords-${globalInfo.name}`, globalInfo.keywords),
-      open: true
-    });
+  const referencedIndicators = getReferencedIndicators();
+  if (referencedIndicators.length > 0) {
+    tabs.push({ title: `Indicators`, html: createIndicatorsPanel(referencedIndicators) });
   }
 
-  // Section for keywords on the record format
+  const commandKeysTab = createCommandKeysPanel();
+  if (commandKeysTab) { tabs.push(commandKeysTab); }
 
-  sections.push({
-    title: `Format Keywords`,
-    html: createKeywordPanel(`keywords-${recordInfo.name}`, recordInfo.keywords, (keywords) => {
-      sendFormatHeaderUpdate(recordInfo.name, keywords);
-    }),
-    open: true
+  if (tabs.length > 0) {
+    // Clamp in case the previously-selected tab no longer exists (e.g. the
+    // Indicators tab disappeared because nothing references an indicator anymore).
+    const selectedIndex = Math.min(recordFormatSidebarTabIndex, tabs.length - 1);
+    renderTabs(sidebar, tabs, selectedIndex, (index) => { recordFormatSidebarTabIndex = index; });
+  } else {
+    sidebar.innerHTML = ``;
+  }
+}
+
+/**
+ * The Preview view's left sidebar - Composed Formats lists every real
+ * format (there's no "current" one to exclude, unlike Design), plus
+ * Indicators when any are referenced.
+ */
+function updatePreviewSidebar() {
+  const sidebar = document.getElementById(`recordFormatSidebar`);
+
+  /** @type {Tab[]} */
+  let tabs = [];
+
+  const allFormats = activeDocument.formats
+    .filter(format => format.name !== GLOBAL_RECORD_FORMAT)
+    .map(format => format.name);
+
+  if (allFormats.length > 0) {
+    tabs.push({ title: `Composed Formats`, html: createComposedFormatsPanel(allFormats) });
+  }
+
+  const referencedIndicators = getReferencedIndicators();
+  if (referencedIndicators.length > 0) {
+    tabs.push({ title: `Indicators`, html: createIndicatorsPanel(referencedIndicators) });
+  }
+
+  const commandKeysTab = createCommandKeysPanel();
+  if (commandKeysTab) { tabs.push(commandKeysTab); }
+
+  if (tabs.length > 0) {
+    const selectedIndex = Math.min(recordFormatSidebarTabIndex, tabs.length - 1);
+    renderTabs(sidebar, tabs, selectedIndex, (index) => { recordFormatSidebarTabIndex = index; });
+  } else {
+    sidebar.innerHTML = ``;
+  }
+}
+
+// CAxx/CFxx command-key keywords go up to 24 (CA01-CA24, CF01-CF24).
+const COMMAND_KEY_PATTERN = /^(CA|CF)(0[1-9]|1[0-9]|2[0-4])$/;
+
+/** @param {string} name */
+function isCommandKeyKeyword(name) {
+  return COMMAND_KEY_PATTERN.test(name);
+}
+
+/**
+ * A read-only legend of every CAxx/CFxx command-key keyword declared
+ * anywhere in the file, alongside which record format it's on - so you can
+ * see what's already wired up before adding a new one, without opening
+ * every record's Format Keywords tab to check.
+ * @returns {{title: string, html: Element}|undefined} undefined if the file
+ * uses no command keys at all, so callers can skip an empty tab.
+ */
+function createCommandKeysPanel() {
+  if (!activeDocument) { return undefined; }
+
+  /** @type {{format: string, keyword: Keyword}[]} */
+  const entries = [];
+  activeDocument.formats.forEach(format => {
+    // A CAxx/CFxx coded before any record (the file-level/global record)
+    // applies to every format in the file, not just one - labelled
+    // distinctly here rather than shown under the internal `_GLOBAL` name.
+    const formatLabel = format.name === GLOBAL_RECORD_FORMAT ? `File level` : format.name;
+
+    format.keywords.forEach(keyword => {
+      if (isCommandKeyKeyword(keyword.name)) {
+        entries.push({ format: formatLabel, keyword });
+      }
+    });
   });
 
-  renderSections(sidebar, sections);
+  if (entries.length === 0) { return undefined; }
+
+  const section = document.createElement(`div`);
+
+  entries.forEach(({ format, keyword }) => {
+    const row = document.createElement(`div`);
+    row.style.display = `flex`;
+    row.style.alignItems = `center`;
+    row.style.gap = `0.5em`;
+    row.style.padding = `0.3em 1em`;
+
+    const icon = document.createElement(`span`);
+    icon.className = `codicon codicon-key`;
+    row.appendChild(icon);
+
+    const text = document.createElement(`span`);
+    text.innerText = keyword.value ? `${keyword.name}(${keyword.value})` : keyword.name;
+    row.appendChild(text);
+
+    const formatText = document.createElement(`span`);
+    formatText.innerText = format;
+    formatText.style.opacity = `0.65`;
+    formatText.style.marginLeft = `auto`;
+    row.appendChild(formatText);
+
+    section.appendChild(row);
+  });
+
+  return { title: `Command Keys`, html: section };
+}
+
+/**
+ * @param {number[]} indicatorNumbers
+ */
+function createIndicatorsPanel(indicatorNumbers) {
+  const section = document.createElement(`div`);
+
+  indicatorNumbers.forEach(indicator => {
+    const checkbox = document.createElement(`vscode-checkbox`);
+    checkbox.setAttribute(`label`, `Indicator ${indicator}`);
+    checkbox.style.display = `block`;
+    checkbox.style.margin = `0.25em 1em`;
+
+    if (activeIndicators.has(indicator)) {
+      checkbox.setAttribute(`checked`, `true`);
+    }
+
+    checkbox.addEventListener(`change`, () => {
+      if (checkbox.checked) {
+        activeIndicators.add(indicator);
+      } else {
+        activeIndicators.delete(indicator);
+      }
+
+      // This panel is shared by both views (Design conditions the one format
+      // it's editing; Preview re-renders whatever's currently composed).
+      if (isPreviewMode) {
+        renderComposedPreview();
+      } else if (lastSelectedFormat) {
+        setWindowForFormat(lastSelectedFormat);
+      }
+    });
+
+    section.appendChild(checkbox);
+  });
+
+  return section;
+}
+
+/**
+ * Preview-only: every real record format, to check on/off for composing
+ * together. There's no "currently focused" one to exclude here.
+ * @param {string[]} formatNames
+ */
+function createComposedFormatsPanel(formatNames) {
+  const section = document.createElement(`div`);
+
+  formatNames.forEach(name => {
+    const checkbox = document.createElement(`vscode-checkbox`);
+    checkbox.setAttribute(`label`, name);
+    checkbox.style.display = `block`;
+    checkbox.style.margin = `0.25em 1em`;
+
+    if (composedFormats.has(name)) {
+      checkbox.setAttribute(`checked`, `true`);
+    }
+
+    checkbox.addEventListener(`change`, () => {
+      if (checkbox.checked) {
+        composedFormats.add(name);
+
+        // A subfile control format's own SFLCTL keyword already pulls in
+        // and renders its subfile's fields (see addFieldsToLayer) - check
+        // the subfile record too, so its checkbox reflects what's already
+        // on screen instead of looking unchecked. Not reversed on uncheck -
+        // the subfile might still be wanted composed on its own.
+        const format = activeDocument.formats.find(f => f.name === name);
+        const subfileKeyword = format?.keywords.find(keyword => keyword.name === `SFLCTL`);
+        if (subfileKeyword?.value) {
+          composedFormats.add(subfileKeyword.value);
+        }
+      } else {
+        composedFormats.delete(name);
+      }
+
+      renderComposedPreview();
+    });
+
+    section.appendChild(checkbox);
+  });
+
+  return section;
 }
 
 function clearFieldInfo() {
   const sidebar = document.getElementById(`fieldInfoSidebar`);
-  sidebar.innerHTML = ``;
+
+  /** @type {{title: string, html: string|Element}[]} */
+  const tabs = [];
+
+  if (!isPreviewMode) {
+    // Nothing is editable in the Preview view, and there's no single
+    // focused format there either (no dropdown - see renderComposedPreview),
+    // so neither of these has anything coherent to show.
+    tabs.push({ title: `Add Field`, html: createAddFieldPanel() });
+    tabs.push(createFormatKeywordsTab());
+  }
+
+  tabs.push(createFileKeywordsTab());
+
+  renderFieldTabs(sidebar, tabs);
+}
+
+/**
+ * Templates below always propose the same base name (e.g. "NEWFLD1") -
+ * clicking the same button twice without renaming the first one would
+ * otherwise silently create two fields with identical names. Appends/bumps
+ * a trailing number until the name is free within the current format.
+ * @param {string} baseName
+ */
+function uniqueFieldName(baseName) {
+  const currentFormat = activeDocument && lastSelectedFormat
+    ? activeDocument.formats.find(format => format.name === lastSelectedFormat)
+    : undefined;
+  const existingNames = new Set((currentFormat ? currentFormat.fields : []).map(field => field.name));
+
+  if (!existingNames.has(baseName)) { return baseName; }
+
+  // Strip any trailing digits first, so repeated clicks land on NEWFLD2,
+  // NEWFLD3, ... instead of colliding forever or growing NEWFLD11, NEWFLD111.
+  const stem = baseName.replace(/\d+$/, ``);
+  let suffix = 2;
+  while (existingNames.has(`${stem}${suffix}`)) { suffix++; }
+  return `${stem}${suffix}`;
+}
+
+/**
+ * Every template below also proposed the same fixed position (1, 1) -
+ * adding a second field/constant right after the first landed it directly
+ * on top, hiding whichever was added first and making it unclickable.
+ * Defaults new ones to the row below whatever's already in the format,
+ * so they land somewhere visibly free instead. Not overlap-proof against
+ * every existing field (only checks the lowest row used), but fields can
+ * always be dragged afterward - this only needs to beat "always (1, 1)".
+ */
+function nextAvailableFieldPosition() {
+  const currentFormat = activeDocument && lastSelectedFormat
+    ? activeDocument.formats.find(format => format.name === lastSelectedFormat)
+    : undefined;
+  const fields = currentFormat ? currentFormat.fields : [];
+
+  if (fields.length === 0) { return { x: 1, y: 1 }; }
+
+  const maxY = Math.max(...fields.map(field => field.position.y));
+  return { x: 1, y: maxY + 1 };
+}
+
+function createAddFieldPanel() {
+  const panel = document.createElement(`div`);
+
+  const createGroupHeader = (title) => {
+    const header = document.createElement(`div`);
+    header.innerText = title.toUpperCase();
+    header.style.fontSize = `0.8em`;
+    header.style.fontWeight = `600`;
+    header.style.letterSpacing = `0.05em`;
+    header.style.opacity = `0.65`;
+    header.style.margin = `1.2em 1em 0.4em`;
+    return header;
+  };
 
   /**
-   * @param {string} label 
-   * @param {string} icon 
-   * @param {FieldInfo} field 
+   * @param {string} label
+   * @param {string} icon
+   * @param {FieldInfo} field
    */
   const createButton = (label, icon, field) => {
     const button = document.createElement(`vscode-button`);
     button.setAttribute(`secondary`, `true`);
     button.setAttribute(`icon`, icon);
-    button.style.margin = `1em`;
+    button.style.margin = `0.2em 1em`;
     button.style.display = `block`;
-    button.style.textAlign = `right`;
+    button.style.textAlign = `left`;
     button.innerText = label;
-    sidebar.appendChild(button);
 
     button.onclick = () => {
       if (lastSelectedFormat) {
-        sendNewField(lastSelectedFormat, field);
+        const fieldToSend = { ...field, position: nextAvailableFieldPosition() };
+        // Constants have no name at all - nothing to de-duplicate.
+        if (fieldToSend.name) {
+          fieldToSend.name = uniqueFieldName(fieldToSend.name);
+        }
+        sendNewField(lastSelectedFormat, fieldToSend);
       }
     };
 
     return button;
   }
 
-  // Creates: <vscode-button secondary>Secondary button</vscode-button>
-  
-  sidebar.appendChild(createButton(`Named field`, `add`));
-  sidebar.appendChild(createButton(`Date field`, `calendar`));
-  sidebar.appendChild(createButton(`Time field`, `calendar`));
-  sidebar.appendChild(createButton(`Timestamp field`, `calendar`));
+  // Input/Both/Hidden usage doesn't exist on a printer file - only Output is
+  // DDS-legal there, so default this button accordingly per file type.
+  const isPrinterFile = activeDocumentType === `dds.prtf`;
 
-  sidebar.appendChild(createButton(`Constant text`, `symbol-constant`, {
+  panel.appendChild(createGroupHeader(`Fields`));
+  panel.appendChild(createButton(`Named field`, `add`, {
+    name: `NEWFLD1`,
+    type: `A`,
+    length: 10,
+    decimals: 0,
+    displayType: isPrinterFile ? `output` : `input`,
+    keywords: [],
+    conditions: [],
+  }));
+  panel.appendChild(createButton(`Date field`, `calendar`, {
+    name: `DATEFLD`,
+    type: `L`,
+    length: 8,
+    decimals: 0,
+    displayType: `output`,
+    keywords: [{name: `DATFMT`, value: `*ISO`, conditions: []}],
+    conditions: [],
+  }));
+  panel.appendChild(createButton(`Time field`, `calendar`, {
+    name: `TIMEFLD`,
+    type: `T`,
+    length: 8,
+    decimals: 0,
+    displayType: `output`,
+    keywords: [{name: `TIMFMT`, value: `*ISO`, conditions: []}],
+    conditions: [],
+  }));
+  // Timestamp fields aren't wired up yet: the parser only special-cases
+  // types L (date) and T (time), not Z (timestamp), so there's no
+  // primitiveType/keyword support to generate a working field from here.
+
+  panel.appendChild(createGroupHeader(`Specials`));
+  panel.appendChild(createButton(`Constant text`, `symbol-constant`, {
     value: `Constant`,
-    position: {x: 1, y: 1},
     displayType: `const`,
     keywords: [],
+    conditions: [],
   }));
-  sidebar.appendChild(createButton(`System name constant`, `account`));
-  sidebar.appendChild(createButton(`Date constant`, `calendar`));
-  sidebar.appendChild(createButton(`Time constant`, `calendar`));
+  panel.appendChild(createButton(`System name constant`, `account`, {
+    name: `SYSFLD`,
+    type: `A`,
+    length: 8,
+    decimals: 0,
+    displayType: `output`,
+    keywords: [{name: `SYSNAME`, value: undefined, conditions: []}],
+    conditions: [],
+  }));
+  panel.appendChild(createButton(`System user constant`, `account`, {
+    name: `USRFLD`,
+    type: `A`,
+    length: 10,
+    decimals: 0,
+    displayType: `output`,
+    keywords: [{name: `USER`, value: undefined, conditions: []}],
+    conditions: [],
+  }));
+  panel.appendChild(createButton(`Date constant`, `calendar`, {
+    name: `DATECST`,
+    type: `L`,
+    length: 8,
+    decimals: 0,
+    displayType: `output`,
+    keywords: [{name: `DATFMT`, value: `*ISO`, conditions: []}],
+    conditions: [],
+  }));
+  panel.appendChild(createButton(`Time constant`, `calendar`, {
+    name: `TIMECST`,
+    type: `T`,
+    length: 8,
+    decimals: 0,
+    displayType: `output`,
+    keywords: [{name: `TIMFMT`, value: `*ISO`, conditions: []}],
+    conditions: [],
+  }));
+
+  return panel;
 }
 
 /**
- * 
- * @param {FieldInfo} fieldInfo 
+ * A tab showing the current record format's own keywords - present in the
+ * right panel regardless of whether a field is selected, so it sits
+ * alongside whatever's currently shown (the add-field toolbox, or a
+ * selected field's own properties/keywords) rather than living separately
+ * in the left sidebar.
+ * @returns {{title: string, html: Element}}
+ */
+function createFormatKeywordsTab() {
+  const currentFormat = activeDocument && lastSelectedFormat
+    ? activeDocument.formats.find(format => format.name === lastSelectedFormat)
+    : undefined;
+
+  const html = currentFormat
+    ? createKeywordPanel(`keywords-${currentFormat.name}`, currentFormat.keywords, isPreviewMode ? undefined : (keywords) => {
+      sendFormatHeaderUpdate(currentFormat.name, keywords);
+    })
+    : document.createElement(`div`);
+
+  return { title: `Format Keywords`, html };
+}
+
+/**
+ * A tab for the file-level (a.k.a. "screen level") keywords - the ones
+ * written above every record format in the source, like DSPSIZ. Same
+ * treatment as createFormatKeywordsTab, just scoped to the whole file
+ * instead of the current record.
+ * @returns {{title: string, html: Element}}
+ */
+function createFileKeywordsTab() {
+  const globalFormat = activeDocument
+    ? activeDocument.formats.find(format => format.name === GLOBAL_RECORD_FORMAT)
+    : undefined;
+
+  const html = globalFormat
+    ? createKeywordPanel(`keywords-${globalFormat.name}`, globalFormat.keywords, isPreviewMode ? undefined : (keywords) => {
+      sendFormatHeaderUpdate(globalFormat.name, keywords);
+    })
+    : document.createElement(`div`);
+
+  return { title: `File Keywords`, html };
+}
+
+/**
+ *
+ * @param {FieldInfo} fieldInfo
  */
 function updateSelectedFieldSidebar(fieldInfo) {
   const sidebar = document.getElementById(`fieldInfoSidebar`);
 
-  /** @type {Section[]} */
-  let sections = [];
-
   /** @type {Property[]} */
   const properties = [];
 
-  if (fieldInfo.name) {
-    properties.push({ label: `Name`, value: fieldInfo.name });
+  // Constants get an internal placeholder name (TEXT1, TEXT2, ...) purely so
+  // the webview has an id to track/select them by - getLinesForField's
+  // `const` branch never writes it out, so editing it here would look like
+  // it did something while actually having no effect on the saved DDS.
+  if (fieldInfo.name && fieldInfo.displayType !== `const`) {
+    properties.push({ label: `Name`, value: fieldInfo.name, id: `name` });
+  }
+
+  if (fieldInfo.displayType === `const`) {
+    // A constant's displayType isn't one of input/output/both/hidden, so the
+    // dropdown below can't represent it - showing it risked corrupting the
+    // field (collectValues() reads back "" for an unmatched selection, which
+    // then fails getLinesForField's `displayType === 'const'` check entirely,
+    // silently dropping the field's text from the generated DDS). There's
+    // also nothing useful to change here for a constant, so just leave it out.
+    properties.push({ label: `Value`, value: fieldInfo.value, id: `value` });
+  } else {
+    // Input/Both/Hidden usage doesn't exist on a printer file - only Output
+    // is DDS-legal there, so don't offer the others.
+    const displayTypeOptions = activeDocumentType === `dds.prtf`
+      ? [{ label: `Output`, value: `output` }]
+      : [
+        { label: `Input`, value: `input` },
+        { label: `Output`, value: `output` },
+        { label: `Both`, value: `both` },
+        { label: `Hidden`, value: `hidden` },
+      ];
+
+    properties.push(
+      { label: `Display Type`, value: fieldInfo.displayType, id: `displayType`, options: displayTypeOptions },
+    );
   }
 
   properties.push(
-    { label: `Display Type`, value: fieldInfo.displayType },
-    { label: `Position`, value: `${fieldInfo.position.x}, ${fieldInfo.position.y}` },
+    { label: `Position X`, value: fieldInfo.position.x, id: `positionX` },
+    { label: `Position Y`, value: fieldInfo.position.y, id: `positionY` },
   );
-
-  if (fieldInfo.displayType === `const`) {
-    properties.push({ label: `Value`, value: fieldInfo.value, id: `value` });
-  }
 
   if (fieldInfo.type) {
     properties.push(
-      { label: `Type`, value: fieldInfo.type },
+      { label: `Type`, value: fieldInfo.type, id: `type`, options: [
+        { label: `Alpha`, value: `A` },
+        { label: `Numeric`, value: `D` },
+      ] },
       { label: `Length`, value: fieldInfo.length, id: `length` },
     );
 
@@ -872,31 +1977,38 @@ function updateSelectedFieldSidebar(fieldInfo) {
     }
   }
 
-  sections.push(
+  renderFieldTabs(sidebar, [
     {
-      title: `Properties`,
-      open: true,
-      // TODO: swap this to createKeywordPanel
+      title: `Basic`,
       html: createValuesPanel(`properties-${fieldInfo.name}`, properties, (newProps) => {
+        const originalFieldName = fieldInfo.name;
+
+        // position.x/y are nested, not flat like the rest of newProps - pull
+        // them out and coerce to numbers (everything from collectValues() is
+        // a string) so downstream arithmetic (e.g. findTouchingFields' `+`)
+        // doesn't silently fall back to string concatenation.
+        const { positionX, positionY, ...rest } = newProps;
+
         fieldInfo = {
           ...fieldInfo,
-          ...newProps
+          ...rest,
+          position: {
+            x: positionX !== undefined ? Number(positionX) : fieldInfo.position.x,
+            y: positionY !== undefined ? Number(positionY) : fieldInfo.position.y,
+          },
         };
 
-        sendFieldUpdate(lastSelectedFormat, fieldInfo.name, fieldInfo);
+        sendFieldUpdate(lastSelectedFormat, originalFieldName, fieldInfo);
       })
     },
     {
       title: `Keywords`,
-      open: Object.keys(fieldInfo.keywords).length > 0,
       html: createKeywordPanel(`keywords-${fieldInfo.name}`, fieldInfo.keywords, (keywords) => {
         fieldInfo.keywords = keywords;
         sendFieldUpdate(lastSelectedFormat, fieldInfo.name, fieldInfo);
       }),
-    }
-  );
-
-  renderSections(sidebar, sections);
+    },
+  ]);
 
   const deleteButton = document.createElement(`vscode-button`);
   deleteButton.setAttribute(`secondary`, `true`);
@@ -916,28 +2028,52 @@ function updateSelectedFieldSidebar(fieldInfo) {
 }
 
 /**
- * 
- * @param {HTMLElement} sidebar 
- * @param {Section[]} sections 
+ * @param {HTMLElement} container
+ * @param {Tab[]} tabs
+ * @param {number} [selectedIndex]
+ * @param {(index: number) => void} [onSelect] called whenever the user picks a different tab
  */
-function renderSections(sidebar, sections) {
-  sidebar.innerHTML = ``;
+function renderTabs(container, tabs, selectedIndex = 0, onSelect = undefined) {
+  container.innerHTML = ``;
 
-  for (let section of sections) {
-    let newSection = document.createElement(`vscode-collapsible`);
-    newSection.setAttribute(`title`, section.title);
-    if (section.open) {
-      newSection.setAttribute(`open`, ``);
-    }
+  const tabsElement = document.createElement(`vscode-tabs`);
+  tabsElement.setAttribute(`selected-index`, String(selectedIndex));
 
-    if (typeof section.html === `string`) {
-      newSection.innerHTML = section.html;
+  for (const tab of tabs) {
+    const header = document.createElement(`vscode-tab-header`);
+    header.setAttribute(`slot`, `header`);
+    header.innerText = tab.title;
+    tabsElement.appendChild(header);
+
+    const panel = document.createElement(`vscode-tab-panel`);
+    panel.style.padding = `1em 0`;
+    if (typeof tab.html === `string`) {
+      panel.innerHTML = tab.html;
     } else {
-      newSection.appendChild(section.html);
+      panel.appendChild(tab.html);
     }
-
-    sidebar.appendChild(newSection);
+    tabsElement.appendChild(panel);
   }
+
+  if (onSelect) {
+    tabsElement.addEventListener(`vsc-tabs-select`, (event) => {
+      onSelect(event.detail.selectedIndex);
+    });
+  }
+
+  container.appendChild(tabsElement);
+}
+
+/**
+ * A small, fixed set of tabs (Basic/Keywords for a selected field) - unlike
+ * the record-format list, this never grows unboundedly, so a tab strip is a
+ * fine fit here. Always resets to the first tab, since the context (which
+ * field, or no field) has just changed.
+ * @param {HTMLElement} container
+ * @param {Tab[]} tabs
+ */
+function renderFieldTabs(container, tabs) {
+  renderTabs(container, tabs);
 }
 
 /**
@@ -991,8 +2127,8 @@ function sendFieldUpdate(recordFormat, originalFieldName, newFieldInfo) {
 }
 
 /**
- * @param {string} recordFormat 
- * @param {Keyword[]} newKeywords 
+ * @param {string} recordFormat
+ * @param {Keyword[]} newKeywords
  */
 function sendFormatHeaderUpdate(recordFormat, newKeywords) {
   vscode.postMessage({
@@ -1001,6 +2137,209 @@ function sendFormatHeaderUpdate(recordFormat, newKeywords) {
     newKeywords
   });
 }
+
+/**
+ * @param {string} recordFormat
+ */
+function sendDeleteFormat(recordFormat) {
+  vscode.postMessage({
+    command: `deleteFormat`,
+    recordFormat
+  });
+}
+
+/**
+ * @param {string} formatName
+ */
+function sendNewFormat(formatName) {
+  vscode.postMessage({
+    command: `newFormat`,
+    formatName
+  });
+}
+
+/**
+ * @param {string} recordFormat
+ * @param {string} newFormatName
+ */
+function sendRenameFormat(recordFormat, newFormatName) {
+  vscode.postMessage({
+    command: `renameFormat`,
+    recordFormat,
+    newFormatName
+  });
+}
+
+/**
+ * DDS record format names: letters/digits/$/#/@/_, starting with a letter
+ * or $/#/@, up to 10 characters.
+ * @param {string} name
+ */
+function isValidFormatName(name) {
+  return /^[A-Z$#@][A-Z0-9$#@_]{0,9}$/.test(name);
+}
+
+/**
+ * Wires up the static "New Format" button/inline form in the top bar. These
+ * elements live directly in index.html (not rebuilt on every render like
+ * the record format selector), so this only needs to run once.
+ */
+function initNewFormatUi() {
+  // Nothing is editable in the Preview view - there's no reason to offer this.
+  if (isPreviewMode) { return; }
+
+  const button = document.getElementById(`newFormatButton`);
+  const form = document.getElementById(`newFormatForm`);
+  const nameField = document.getElementById(`newFormatName`);
+  const confirmButton = document.getElementById(`newFormatConfirm`);
+
+  const showForm = () => {
+    button.style.display = `none`;
+    form.style.display = `flex`;
+    nameField.value = ``;
+    nameField.focus();
+  };
+
+  const hideForm = () => {
+    form.style.display = `none`;
+    button.style.display = ``;
+  };
+
+  const submit = () => {
+    const typed = (nameField.value || ``).trim().toUpperCase();
+    if (!typed || !isValidFormatName(typed)) { return; }
+
+    const existingNames = activeDocument ? activeDocument.formats.map(format => format.name) : [];
+    if (typed === GLOBAL_RECORD_FORMAT || existingNames.includes(typed)) {
+      // Name already taken - leave the form open so the user can pick another.
+      return;
+    }
+
+    // Optimistically select the new format now, so that once the extension
+    // host round-trips the reload it's the one that ends up shown, instead
+    // of loadDDS falling back to whatever the first format happens to be.
+    lastSelectedFormat = typed;
+    sendNewFormat(typed);
+    hideForm();
+  };
+
+  button.addEventListener(`click`, showForm);
+  confirmButton.addEventListener(`click`, submit);
+  nameField.addEventListener(`keydown`, (event) => {
+    if (event.key === `Enter`) {
+      submit();
+    } else if (event.key === `Escape`) {
+      hideForm();
+    }
+  });
+}
+
+/**
+ * Wires up the static "Rename Format" button/inline form in the top bar -
+ * same pattern as initNewFormatUi, just pre-filled with the currently
+ * selected format's name and sending a rename instead of a create.
+ */
+function initRenameFormatUi() {
+  // Nothing is editable in the Preview view - there's no reason to offer this.
+  if (isPreviewMode) { return; }
+
+  const button = document.getElementById(`renameFormatButton`);
+  const form = document.getElementById(`renameFormatForm`);
+  const nameField = document.getElementById(`renameFormatName`);
+  const confirmButton = document.getElementById(`renameFormatConfirm`);
+
+  const showForm = () => {
+    if (!lastSelectedFormat) { return; }
+    button.style.display = `none`;
+    form.style.display = `flex`;
+    nameField.value = lastSelectedFormat;
+    nameField.focus();
+  };
+
+  const hideForm = () => {
+    form.style.display = `none`;
+    button.style.display = ``;
+  };
+
+  const submit = () => {
+    if (!lastSelectedFormat) { return; }
+
+    const typed = (nameField.value || ``).trim().toUpperCase();
+    if (!typed || !isValidFormatName(typed)) { return; }
+
+    if (typed === lastSelectedFormat) {
+      // No actual change.
+      hideForm();
+      return;
+    }
+
+    const existingNames = activeDocument ? activeDocument.formats.map(format => format.name) : [];
+    if (typed === GLOBAL_RECORD_FORMAT || existingNames.includes(typed)) {
+      // Name already taken - leave the form open so the user can pick another.
+      return;
+    }
+
+    const oldName = lastSelectedFormat;
+    // Optimistically point at the new name now, so it's still the one shown
+    // once the extension host round-trips the reload.
+    lastSelectedFormat = typed;
+    sendRenameFormat(oldName, typed);
+    hideForm();
+  };
+
+  button.addEventListener(`click`, showForm);
+  confirmButton.addEventListener(`click`, submit);
+  nameField.addEventListener(`keydown`, (event) => {
+    if (event.key === `Enter`) {
+      submit();
+    } else if (event.key === `Escape`) {
+      hideForm();
+    }
+  });
+}
+
+/**
+ * Wires up the static "Delete Format" button in the top bar - deletes
+ * whichever format is currently selected. No confirmation dialog, matching
+ * the existing field-level Delete button; a normal WorkspaceEdit still
+ * leaves this on the undo stack.
+ */
+function initDeleteFormatUi() {
+  // Nothing is editable in the Preview view - there's no reason to offer this
+  // (the row it lives in is already hidden entirely by initNewFormatUi).
+  if (isPreviewMode) { return; }
+
+  const button = document.getElementById(`deleteFormatButton`);
+
+  button.addEventListener(`click`, () => {
+    if (lastSelectedFormat) {
+      sendDeleteFormat(lastSelectedFormat);
+      // Don't keep pointing at a format that's about to disappear - let the
+      // next loadDDS fall back to whatever format ends up first instead.
+      lastSelectedFormat = undefined;
+    }
+  });
+}
+
+/**
+ * Hides the top-bar chrome that only makes sense when something's editable:
+ * New Format/Delete Format, and the Selected Format dropdown (Preview has
+ * no "selected" format at all - see renderComposedPreview). The DSPSIZ
+ * DS3/DS4 toggle stays, since it's relevant to both views.
+ */
+function hidePreviewOnlyChrome() {
+  document.getElementById(`formatToolbarRow`).style.display = `none`;
+  document.getElementById(`selectedFormatRow`).style.display = `none`;
+}
+
+window.addEventListener(`DOMContentLoaded`, () => {
+  if (isPreviewMode) {
+    hidePreviewOnlyChrome();
+  }
+  initNewFormatUi();
+  initRenameFormatUi();
+  initDeleteFormatUi();
+});
 
 /**
  * Used to create panels for editable key/value lists.
@@ -1042,14 +2381,25 @@ function createKeywordPanel(id, inputKeywords, onUpdate) {
       return {
         icons,
         label: keyword.name,
-        value: keyword,
+        // The item's identity for edit/delete. It has to be the position in
+        // `keywords`, not the keyword itself: two entries can be identical
+        // apart from their conditioning indicators (a pair of DSPATR(HI)s
+        // gated by different indicators is ordinary DDS), and matching those
+        // by name+value hits whichever one comes first.
+        value: String(index),
         description: keyword.value,
         actions,
-        subItems: keyword.conditions.map(c => ({
-          label: String(c.indicator),
-          description: c.negate ? `Negated` : undefined,
-          icons
-        })),
+        // A plain "OR" chip between groups so the AND/OR structure is
+        // visible at a glance without opening the editor - indicators
+        // within a group are AND'd, groups themselves are OR'd.
+        subItems: keyword.conditions.flatMap((group, groupIndex) => [
+          ...(groupIndex > 0 ? [{ label: `OR`, icons }] : []),
+          ...group.indicators.map(c => ({
+            label: String(c.indicator),
+            description: c.negate ? `Negated` : undefined,
+            icons
+          })),
+        ]),
       };
     });
   };
@@ -1057,30 +2407,29 @@ function createKeywordPanel(id, inputKeywords, onUpdate) {
   rerenderTree();
 
   tree.addEventListener('vsc-run-action', (event) => {
-    console.log(event.detail);
-    /** @type {Keyword} */
-    const currentKeyword = event.detail.value;
-    const oldKeywordIndex = keywords.findIndex(k => k.name === currentKeyword.name && k.value === currentKeyword.value);
+    const oldKeywordIndex = Number(event.detail.value);
+    /** @type {Keyword|undefined} */
+    const currentKeyword = keywords[oldKeywordIndex];
+
+    // The tree was built from this same array, so this shouldn't happen -
+    // but acting on a stale index would edit or delete the wrong keyword.
+    if (!currentKeyword) { return; }
 
     switch (event.detail.actionId) {
       case `delete`:
-        if (oldKeywordIndex >= 0) {
-          keywords.splice(oldKeywordIndex, 1);
-        }
+        keywords.splice(oldKeywordIndex, 1);
         rerenderTree();
+        onUpdate(keywords);
         break;
 
       case `edit`:
         editKeyword((newKeyword) => {
-          if (oldKeywordIndex >= 0) {
-            keywords[oldKeywordIndex] = newKeyword;
-          } else {
-            keywords.push(newKeyword);
-          }
+          keywords[oldKeywordIndex] = newKeyword;
 
           clearKeywordEditor();
           rerenderTree();
-        }, event.detail.value);
+          onUpdate(keywords);
+        }, currentKeyword);
         break;
     }
   });
@@ -1090,33 +2439,21 @@ function createKeywordPanel(id, inputKeywords, onUpdate) {
   if (onUpdate) {
     const newKeyword = document.createElement(`vscode-button`);
     newKeyword.setAttribute(`icon`, `add`);
-  
+
     newKeyword.innerText = `New Keyword`;
     newKeyword.style.margin = `1em`;
     newKeyword.style.display = `block`;
-    
+
     newKeyword.addEventListener(`click`, (e) => {
       editKeyword((newKeyword) => {
         keywords.push(newKeyword);
         clearKeywordEditor();
         rerenderTree();
+        onUpdate(keywords);
       });
     });
 
-    const updateButton = document.createElement(`vscode-button`);
-    updateButton.innerText = `Update`;
-    
-    // Center the button
-    updateButton.style.margin = `1em`;
-    updateButton.style.display = `block`;
-
-    updateButton.addEventListener(`click`, (e) => {
-      // As we update keywords, the `keywords` variable is updated
-      onUpdate(keywords);
-    });
-
     section.appendChild(newKeyword);
-    section.appendChild(updateButton);
   }
 
   return section;
@@ -1133,72 +2470,114 @@ function createValuesPanel(id, properties, onUpdate) {
   const section = document.createElement(`div`);
   section.id = id;
 
-  const createLabelCell = (label) => {
-    const cell = document.createElement(`vscode-table-cell`);
-    cell.innerText = label;
-    return cell;
+  // vscode-table-cell forces `overflow: hidden`, which clips a select's dropdown
+  // popup (it's position:absolute relative to itself, not portaled to <body>) so
+  // it never becomes visible when opened. A form-group layout has no such clip.
+  const group = document.createElement(`vscode-form-group`);
+  group.setAttribute(`variant`, `vertical`);
+  group.style.padding = `0 1em`;
+
+  const createRow = (label) => {
+    const row = document.createElement(`div`);
+    row.style.display = `flex`;
+    row.style.flexDirection = `column`;
+    row.style.gap = `0.3em`;
+    row.style.marginBottom = `1em`;
+
+    const labelElement = document.createElement(`vscode-label`);
+    labelElement.innerText = label;
+    labelElement.style.opacity = `0.8`;
+    labelElement.style.fontSize = `0.9em`;
+    row.appendChild(labelElement);
+
+    return row;
   };
 
-  const createInputCell = (id, value, placeHolder) => {
-    const cell = document.createElement(`vscode-table-cell`);
+  // Every edit applies immediately (no Update button) - collectValues() always
+  // reads the full set of controls so each change sends a consistent snapshot,
+  // not just the one field that changed.
+  const collectValues = () => {
+    /** @type {{[key: string]: string}} */
+    const values = {};
 
-    const input = document.createElement(`code`);
-    input.id = id;
-    input.innerText = value;
-    input.setAttribute(`contenteditable`, `true`);
-
-    cell.appendChild(input);
-
-    return cell;
-  };
-
-  const table = document.createElement(`vscode-table`);
-  table.id = id;
-
-  const tableBody = document.createElement(`vscode-table-body`);
-
-  const hasEditableData = properties.some(prop => prop.id !== undefined);
-
-  for (let prop of properties) {
-    const row = document.createElement(`vscode-table-row`);
-
-    row.appendChild(createLabelCell(prop.label));
-
-    if (prop.id) {
-      row.append(createInputCell(prop.id, prop.value, `no value`));
-    } else {
-      row.append(createLabelCell(prop.value));
-    }
-
-    tableBody.appendChild(row);
-  }
-
-  table.appendChild(tableBody);
-  section.appendChild(table);
-
-  if (hasEditableData) {
-    const updateButton = document.createElement(`vscode-button`);
-    updateButton.innerText = `Update`;
-
-    // Center the button
-    updateButton.style.margin = `1em`;
-    updateButton.style.display = `block`;
-
-    updateButton.addEventListener(`click`, (e) => {
-      const values = section.querySelectorAll(`[contenteditable]`);
-
-      /** @type {{[key: string]: string}} */
-      let newProperties = {};
-
-      values.forEach(field => {
-        newProperties[field.id] = field.innerText;
-      });
-
-      onUpdate(newProperties);
+    section.querySelectorAll(`[data-field-id]`).forEach(field => {
+      if (field.tagName === `VSCODE-SINGLE-SELECT`) {
+        // A select's .value comes back undefined when the field's actual
+        // value isn't one of its options (e.g. the Type dropdown only offers
+        // Alpha/Numeric, so a Date/Time field's real type doesn't match any
+        // option). Sending that through would overwrite the real value with
+        // literally the string "undefined" once it hits a template literal
+        // in getLinesForField - corrupting the field and, since that throws
+        // off fixed-column parsing on reload, potentially every line after
+        // it too. Leaving the key out entirely just leaves that property
+        // untouched instead.
+        if (field.value) {
+          values[field.dataset.fieldId] = field.value;
+        }
+      } else {
+        values[field.dataset.fieldId] = field.innerText;
+      }
     });
 
-    section.appendChild(updateButton);
+    return values;
+  };
+
+  const createInputElement = (fieldId, value) => {
+    const input = document.createElement(`code`);
+    input.dataset.fieldId = fieldId;
+    input.innerText = value;
+    input.setAttribute(`contenteditable`, `true`);
+    input.style.display = `block`;
+    input.style.width = `100%`;
+    input.style.boxSizing = `border-box`;
+    input.style.padding = `0.4em 0.5em`;
+    input.style.border = `1px solid var(--vscode-settings-textInputBorder, transparent)`;
+    input.style.borderRadius = `2px`;
+    input.style.background = `var(--vscode-settings-textInputBackground)`;
+    input.style.color = `var(--vscode-settings-textInputForeground)`;
+    input.addEventListener(`blur`, () => onUpdate(collectValues()));
+
+    return input;
+  };
+
+  const createSelectElement = (fieldId, value, options) => {
+    const select = document.createElement(`vscode-single-select`);
+    select.dataset.fieldId = fieldId;
+    select.style.width = `100%`;
+    // Assigning slotted <vscode-option> children only registers reliably once
+    // the element is connected and a slotchange fires - fragile when building
+    // the whole tree detached, as we do here. Setting .options directly writes
+    // the component's internal state synchronously, so selection works immediately.
+    // The initial selection isn't derived from the `selected` flags in that path
+    // though - it has to be set explicitly via .value.
+    select.options = options.map(option => ({
+      label: option.label,
+      value: option.value,
+    }));
+    select.value = value;
+
+    select.addEventListener(`change`, () => onUpdate(collectValues()));
+
+    return select;
+  };
+
+  for (let prop of properties) {
+    const row = createRow(prop.label);
+
+    if (prop.options) {
+      row.appendChild(createSelectElement(prop.id, prop.value, prop.options));
+    } else if (prop.id) {
+      row.appendChild(createInputElement(prop.id, prop.value));
+    } else {
+      const plainValue = document.createElement(`div`);
+      plainValue.innerText = prop.value;
+      row.appendChild(plainValue);
+    }
+
+    group.appendChild(row);
   }
+
+  section.appendChild(group);
 
   return section;
 }
@@ -1208,9 +2587,501 @@ function clearKeywordEditor() {
   keywordEditorArea.innerHTML = ``;
 }
 
+// Every CA01-CA24 / CF01-CF24 command key, the same 01-24 range
+// COMMAND_KEY_PATTERN recognises when reading them back out of a file.
+// Listing them all is what keeps CF05 (say) pickable instead of something
+// you have to know to type.
+const COMMAND_KEY_KEYWORDS = Array.from({ length: 24 }, (_, index) => {
+  const number = String(index + 1).padStart(2, `0`);
+  return [`CA${number}`, `CF${number}`];
+}).flat();
+
+// Common DDS keywords for display files (DSPF) and printer files (PRTF), at
+// file/record/field level. Not necessarily exhaustive - there are
+// obscure/version-specific keywords not listed here. The keyword select below
+// is a filterable combobox that also accepts free text, so a keyword missing
+// from this list can still just be typed directly.
+const DDS_KEYWORDS = [
+  ...COMMAND_KEY_KEYWORDS,
+  `AFPRSC`, `ALARM`, `ALIGN`, `ASSUME`, `AUTO`,
+  `BARCODE`, `BLANKS`, `BLINK`,
+  `CDEFNT`,
+  `CHANGE`, `CHECK`, `CHGINPDFT`, `CHRSIZ`, `CLRL`, `COLOR`, `CONCAT`, `CPI`, `CSRLOC`,
+  `DATA`, `DATE`, `DATFMT`, `DATSEP`, `DFRWRT`, `DFT`, `DSPATR`, `DSPSIZ`, `DUPLEX`,
+  `EDTCDE`, `EDTWRD`, `END`, `ENDPAGE`, `ERRMSG`, `ERRMSGID`, `ERRSFL`,
+  `FONT`, `FORCE`, `FORMFEED`,
+  `HELP`, `HLPARA`, `HLPID`, `HLPPGM`, `HLPRTN`,
+  `IGCALTTYP`, `INDARA`, `INDTXT`,
+  `KEEP`, `LPI`,
+  `MNUBAR`, `MSGID`, `MSGLOC`,
+  `OUTBIN`, `OUTPUT`, `OVERFLOW`, `OVERLAY`,
+  `PAGEDOWN`, `PAGEUP`, `PAGNBR`, `PAGRTT`, `PAGSIZ`, `PRINT`, `PRTQLTY`, `PULLDOWN`, `PUTOVR`, `PUTRETAIN`,
+  `RANGE`, `REF`, `REFFLD`, `RMVWDW`, `ROLLDOWN`, `ROLLUP`, `RTNCSRLOC`,
+  `SFL`, `SFLCLR`, `SFLCSRRRN`, `SFLCTL`, `SFLDROP`, `SFLDSP`, `SFLDSPCTL`, `SFLEND`,
+  `SFLENTER`, `SFLFOLD`, `SFLINZ`, `SFLLIN`, `SFLMODE`, `SFLMSG`, `SFLMSGID`, `SFLMSGRCD`,
+  `SFLNXTCHG`, `SFLPAG`, `SFLPGMQ`, `SFLRCDNBR`, `SFLRNA`, `SFLROLVAL`, `SFLSCROLL`, `SFLSIZ`,
+  `SKIPA`, `SKIPB`, `SPACEA`, `SPACEB`, `SYSNAME`,
+  `TEXT`, `TIME`, `TIMFMT`, `TIMSEP`, `TRNSPARENCY`,
+  `UDATE`, `UDAY`, `UMONTH`, `UNDERLINE`, `USER`, `USRDFN`, `USRRSTDSP`, `UYEAR`,
+  `VALUES`, `VLDCMDKEY`,
+  `WDWBORDER`, `WDWTITLE`, `WINDOW`, `WRDWRAP`,
+].sort();
+
+/**
+ * Value sets for keywords whose value is a single token, keyed by keyword
+ * name: value code to what it means. Feeds the Value control's dropdown -
+ * a keyword that isn't here keeps the plain free-text box, and even one
+ * that is here stays a creatable combobox, so a value we don't have tabled
+ * (or a newer one IBM has added since) can still just be typed.
+ *
+ * Deliberately excludes the space-separated multi-value keywords - DSPATR(HI UL)
+ * can't be expressed by a single-select at all.
+ */
+const KEYWORD_VALUES = {
+  CHECK: {
+    AB: `Allow blank`,
+    ER: `Erase to end of field on first keystroke`,
+    LC: `Lowercase allowed`,
+    ME: `Mandatory entry`,
+    MF: `Mandatory fill`,
+    RB: `Right-to-left blank fill`,
+    RL: `Right-to-left entry`,
+    VN: `Validate name`,
+  },
+  COLOR: {
+    GRN: `Green (the default)`,
+    WHT: `White`,
+    RED: `Red`,
+    TRQ: `Turquoise`,
+    YLW: `Yellow`,
+    PNK: `Pink`,
+    BLU: `Blue`,
+  },
+  // The same maps the canvas renders these fields from, so the dropdown and
+  // what you see on screen can't drift apart.
+  DATFMT: dateFormats,
+  EDTCDE: {
+    1: `No sign, no comma, no zero suppression`,
+    2: `No sign, comma, no zero suppression`,
+    3: `No sign, no comma, zero suppression`,
+    4: `No sign, comma, zero suppression`,
+    J: `CR for negative, no comma`,
+    K: `CR for negative, comma`,
+    L: `CR for negative, no comma, zero suppression`,
+    M: `CR for negative, comma, zero suppression`,
+    N: `Minus for negative, no comma`,
+    O: `Minus for negative, comma`,
+    P: `Minus for negative, no comma, zero suppression`,
+    Q: `Minus for negative, comma, zero suppression`,
+    Y: `Date format (slashes)`,
+    Z: `Suppress leading zeros, no sign`,
+  },
+  DSPATR: {
+    HI: `High intensity`,
+    BL: `Blink`,
+    UL: `Underline`,
+    RI: `Reverse image`,
+    ND: `Non-display`,
+    PR: `Protected (no input)`,
+    PC: `Position cursor here`,
+    CS: `Column separator`,
+    MDT: `Set modified data tag`,
+  },
+  SFLEND: {
+    '*MORE': `"More..." at the bottom of a full page`,
+    '*PLUS': `"+" at the bottom of a full page`,
+    '*SCRBAR': `Scroll bar`,
+  },
+  TIMFMT: timeFormats,
+};
+
+/**
+ * Keywords whose value is a space-separated LIST of the codes in
+ * KEYWORD_VALUES rather than a single one - DSPATR(HI UL) is two display
+ * attributes, not a value called "HI UL". A single-select can't express
+ * that, so these get the checkbox treatment instead (see createValueControl).
+ */
+const MULTI_VALUE_KEYWORDS = new Set([`DSPATR`]);
+
+/**
+ * Splits a space-separated keyword value into its individual codes.
+ * @param {string} value
+ */
+function valueTokens(value) {
+  return (value || ``).trim().split(/\s+/).filter(token => token.length > 0);
+}
+
+/**
+ * Per-keyword help for display files: which level(s) the keyword is legal at
+ * and one line on what it does, transcribed from IBM's DDS reference (DDS for
+ * display files). Feeds the hint line under the keyword name in the editor.
+ *
+ * This is help text, never a gate - see the ground rule in todo.md. A keyword
+ * that isn't here (or isn't legal for the file type currently open) just shows
+ * no hint, and nothing here is checked against what you type.
+ *
+ * `CA`/`CF` aren't keywords themselves - they stand in for all 48 CAxx/CFxx
+ * command keys, which say the same thing bar the key number (see keywordHelp).
+ */
+const KEYWORD_HELP = {
+  ALARM: { levels: [`Record`], description: `Sounds the workstation's audible alarm when this record is displayed` },
+  ALIAS: { levels: [`Field`], description: `Gives the field an alternative name for the compiler to bring into the program` },
+  ALTHELP: { levels: [`File`], description: `Assigns a CAnn key as an alternative Help key` },
+  ALTNAME: { levels: [`Record`], description: `Gives the record an alternative name for I/O from a program-described file` },
+  ALTPAGEDWN: { levels: [`File`], description: `Assigns a CFnn key as an alternative Page Down key (CF08 by default)` },
+  ALTPAGEUP: { levels: [`File`], description: `Assigns a CFnn key as an alternative Page Up key (CF07 by default)` },
+  ALWGPH: { levels: [`File`, `Record`], description: `Allows graphics and alphanumeric contents to be displayed together (5292 Model 2 only)` },
+  ALWROL: { levels: [`Record`], description: `Lets your program roll the data inside a window on the display` },
+  ASSUME: { levels: [`Record`], description: `Assumes this record is already on the display when the file is opened` },
+  AUTO: { levels: [`Field`], description: `Older equivalent of CHECK(ER), CHECK(RB) and CHECK(RZ) - CHECK is preferred` },
+  BLANKS: { levels: [`Field`], description: `Sets on a response indicator when a numeric input field is left blank, telling blank apart from zero` },
+  BLINK: { levels: [`Record`], description: `Flashes the cursor for as long as this record is displayed` },
+  BLKFOLD: { levels: [`Field`], description: `Folds a long output field onto the next display line at a blank rather than mid-word` },
+  CA: { levels: [`File`, `Record`], description: `Command attention key - returns control to your program with no input data, setting the response indicator` },
+  CCSID: { levels: [`File`, `Record`, `Field`], description: `Makes a G-type field carry Unicode data instead of DBCS-graphic data` },
+  CF: { levels: [`File`, `Record`], description: `Command function key - returns control to your program with the changed input data, setting the response indicator` },
+  CHANGE: { levels: [`Record`, `Field`], description: `Sets on a response indicator when the user changes any field in the record (or this field)` },
+  CHCACCEL: { levels: [`Field`], description: `Text shown as the accelerator key for a pull-down menu choice` },
+  CHCAVAIL: { levels: [`Field`], description: `Colour or display attributes for the available choices in a menu bar, push button or selection field` },
+  CHCCTL: { levels: [`Field`], description: `Controls, through a program field, which choices in a selection field are available` },
+  CHCSLT: { levels: [`Field`], description: `Colour or display attributes for a selected choice in a menu bar or selection field` },
+  CHCUNAVAIL: { levels: [`Field`], description: `Colour or display attributes for the unavailable choices in a selection field or push button` },
+  CHECK: { levels: [`File`, `Record`, `Field`], description: `Validity checking (AB, ME, MF, VN...) and keyboard control (ER, LC, RB, RZ, RL) for input fields - not every value is legal at every level` },
+  CHGINPDFT: { levels: [`File`, `Record`, `Field`], description: `Changes one or more input defaults for input-capable fields` },
+  CHKMSGID: { levels: [`Field`], description: `The error message issued when this field fails its validity check` },
+  CHOICE: { levels: [`Field`], description: `Defines one choice in a selection field` },
+  CHRID: { levels: [`Field`], description: `Translates the field when the file's CHRID differs from the workstation's` },
+  CLEAR: { levels: [`File`, `Record`], description: `Returns control to your program when the Clear key is pressed` },
+  CLRL: { levels: [`Record`], description: `Clears a given number of display lines before this record is written` },
+  CMP: { levels: [`Field`], description: `Validity-checks input against one value with a comparison (older spelling of COMP)` },
+  CNTFLD: { levels: [`Field`], description: `Defines the field as a continued-entry field, typed across several display lines` },
+  COLOR: { levels: [`Field`], description: `The colour of the field on a colour display` },
+  COMP: { levels: [`Field`], description: `Validity-checks input against one value with a comparison (EQ, NE, LT, NL, GT, NG, LE, GE)` },
+  CSRINPONLY: { levels: [`File`, `Record`], description: `Restricts cursor movement to input-capable positions only` },
+  CSRLOC: { levels: [`Record`], description: `Places the cursor at the row/column held in two named fields when the record is written` },
+  DATE: { levels: [`Field`], description: `Displays the current date as a constant, output-only field` },
+  DATFMT: { levels: [`Field`], description: `The format of a date (L) field` },
+  DATSEP: { levels: [`Field`], description: `The separator character used in a date (L) field` },
+  DFT: { levels: [`Field`], description: `The constant value of an unnamed field, or a default value for a named one` },
+  DFTVAL: { levels: [`Field`], description: `A default value for an output-capable field, which the program can override` },
+  DLTCHK: { levels: [`Field`], description: `Drops the validity checking a referenced field brought with it (needs R in position 29)` },
+  DLTEDT: { levels: [`Field`], description: `Drops the EDTCDE or EDTWRD a referenced field brought with it (needs R in position 29)` },
+  DSPATR: { levels: [`Field`], description: `Display attributes for the field - HI, UL, RI, ND, PR, BL, CS, PC, MDT` },
+  DSPMOD: { levels: [`Record`], description: `Which display mode (size) this record uses on a display station that supports two` },
+  DSPRL: { levels: [`File`], description: `Writes the file's records right to left on the display` },
+  DSPSIZ: { levels: [`File`], description: `The display size(s) the file can be opened for - 24x80 (*DS3) and/or 27x132 (*DS4)` },
+  DUP: { levels: [`Field`], description: `Activates the Dup key for this field, setting on a response indicator when it's pressed` },
+  EDTCDE: { levels: [`Field`], description: `Edits an output-capable numeric field with one of DDS's standard edit codes` },
+  EDTWRD: { levels: [`Field`], description: `Edits a numeric field with an edit word, for formatting EDTCDE can't produce` },
+  ENTFLDATR: { levels: [`File`, `Record`, `Field`], description: `Changes the field's leading attribute while the cursor is in it` },
+  ERASE: { levels: [`Record`], description: `Erases the named records from the display as this one is written (used with OVERLAY)` },
+  ERASEINP: { levels: [`Record`], description: `Erases input-capable fields already on the display (used with OVERLAY)` },
+  ERRMSG: { levels: [`Field`], description: `The error message text shown on the message line for this field` },
+  ERRMSGID: { levels: [`Field`], description: `The message ID whose text is shown on the message line for this field` },
+  ERRSFL: { levels: [`File`], description: `Displays messages through the system-supplied error subfile, so several can queue up` },
+  FLDCSRPRG: { levels: [`Field`], description: `The field the cursor moves to when it leaves this one` },
+  FLTFIXDEC: { levels: [`Field`], description: `Displays an output-capable floating-point field in fixed-decimal notation` },
+  FLTPCN: { levels: [`Field`], description: `The precision - single or double - of a floating-point field` },
+  FRCDTA: { levels: [`Record`], description: `Displays the record immediately instead of waiting for the next input operation` },
+  GETRETAIN: { levels: [`Record`], description: `Keeps input-capable fields on the display through an input operation (used with UNLOCK)` },
+  GRDATR: { levels: [`File`, `Record`], description: `Default colour and line type for the record's grid structures` },
+  GRDBOX: { levels: [`Record`], description: `Shape, position and attributes of a grid box` },
+  GRDCLR: { levels: [`Record`], description: `The rectangle within which all grid structures are cleared` },
+  GRDLIN: { levels: [`Record`], description: `Shape, position and attributes of a grid line` },
+  GRDRCD: { levels: [`Record`], description: `Defines the record as a grid line structure` },
+  HELP: { levels: [`File`, `Record`], description: `Enables the Help key` },
+  HLPARA: { levels: [`Help specification`], description: `The rectangular area of the display this help specification covers` },
+  HLPBDY: { levels: [`Help specification`], description: `Limits which help information is available from this help specification` },
+  HLPCLR: { levels: [`Record`], description: `Clears the list of active help specifications` },
+  HLPCMDKEY: { levels: [`Record`], description: `Returns control to your program when a CA/CF key is pressed on an application help record` },
+  HLPDOC: { levels: [`File`, `Help specification`], description: `The document holding the help text for a location on the display` },
+  HLPEXCLD: { levels: [`Help specification`], description: `Keeps this help specification's text out of extended help, leaving it item-specific` },
+  HLPFULL: { levels: [`File`], description: `Shows the application's help panel group full screen rather than in a window` },
+  HLPID: { levels: [`Field`], description: `An identifier for a constant field, for field-level help` },
+  HLPPNLGRP: { levels: [`File`, `Help specification`], description: `The UIM panel group holding the help shown when the Help key is pressed` },
+  HLPRCD: { levels: [`File`, `Help specification`], description: `The record format holding the help shown when the Help key is pressed` },
+  HLPRTN: { levels: [`File`, `Record`], description: `Returns control to your program when the Help key is pressed` },
+  HLPSCHIDX: { levels: [`File`], description: `Enables index search on the Help display and names the search index object` },
+  HLPSEQ: { levels: [`Record`], description: `Sequences help text records for Page key processing` },
+  HLPTITLE: { levels: [`File`, `Record`], description: `The default title of the online help panel group` },
+  HOME: { levels: [`File`, `Record`], description: `Handles the Home key in your program instead of letting the system home the cursor` },
+  HTML: { levels: [`Field`], description: `Sends HTML tags along with the 5250 data stream for an unnamed constant field` },
+  IGCALTTYP: { levels: [`Field`], description: `Turns input-capable alphanumeric fields into DBCS (type O) fields` },
+  IGCCNV: { levels: [`File`], description: `Enables DBCS conversion, so DBCS characters can be picked rather than typed` },
+  INDARA: { levels: [`File`], description: `Moves option and response indicators out of the record buffer into a separate 99-byte area` },
+  INDTXT: { levels: [`File`, `Record`, `Field`], description: `Documents what an indicator is for - comment only, no run-time effect` },
+  INVITE: { levels: [`File`, `Record`], description: `Invites the device for a later read operation` },
+  INZINP: { levels: [`Record`], description: `Initialises input fields without sending the data (used with PUTOVR and ERASEINP(*ALL))` },
+  INZRCD: { levels: [`Record`], description: `Writes the record to the display before an input operation if it isn't already there` },
+  KEEP: { levels: [`Record`], description: `Keeps the record on the display when the file is closed` },
+  LOCK: { levels: [`Record`], description: `Leaves the keyboard locked after an output operation` },
+  LOGINP: { levels: [`Record`], description: `Writes the record's input buffer to the job log on every input operation` },
+  LOGOUT: { levels: [`Record`], description: `Writes the record's output buffer to the job log on every output operation` },
+  LOWER: { levels: [`Field`], description: `Older equivalent of CHECK(LC) - CHECK is preferred` },
+  MAPVAL: { levels: [`Field`], description: `Maps a date, time or timestamp field between program and system values` },
+  MDTOFF: { levels: [`Record`], description: `Sets off modified data tags on fields already displayed (used with OVERLAY)` },
+  MLTCHCFLD: { levels: [`Field`], description: `Defines the field as a multiple-choice selection field` },
+  MNUBAR: { levels: [`Record`], description: `Defines the record as a menu bar` },
+  MNUBARCHC: { levels: [`Field`], description: `Defines one choice on a menu-bar field and the pull-down record behind it` },
+  MNUBARDSP: { levels: [`Record`], description: `Displays a menu bar from this record` },
+  MNUBARSEP: { levels: [`Field`], description: `Colour, attributes and character of the menu-bar separator line` },
+  MNUBARSW: { levels: [`File`, `Record`], description: `Assigns a CAnn key as the Switch-to-menu-bar key` },
+  MNUCNL: { levels: [`File`, `Record`], description: `Assigns a CAnn key as the cancel key for menu bars and pull-down menus` },
+  MOUBTN: { levels: [`File`, `Record`], description: `Ties a pointer-device event to a command key or event ID` },
+  MSGALARM: { levels: [`File`, `Record`], description: `Sounds the alarm when an error message or failed validity check is displayed` },
+  MSGCON: { levels: [`Field`], description: `Takes a constant field's text from a message description instead of the source` },
+  MSGID: { levels: [`Field`], description: `Takes a named field's text from a message description chosen at run time` },
+  MSGLOC: { levels: [`File`], description: `The line the program's messages are displayed on` },
+  NOCCSID: { levels: [`Field`], description: `Skips CCSID conversion for the field` },
+  OPENPRT: { levels: [`File`], description: `Keeps the print file opened by the Print key open until the display file closes` },
+  OVERLAY: { levels: [`Record`], description: `Writes the record over what's on the display instead of clearing the screen first` },
+  OVRATR: { levels: [`Record`, `Field`], description: `Overrides the display attributes of what's already displayed (used with PUTOVR)` },
+  OVRDTA: { levels: [`Record`, `Field`], description: `Overrides the data of what's already displayed (used with PUTOVR)` },
+  PAGEDOWN: { levels: [`File`, `Record`], description: `Handles Page Down in your program when the system can't page the display itself` },
+  PAGEUP: { levels: [`File`, `Record`], description: `Handles Page Up in your program when the system can't page the display itself` },
+  PASSRCD: { levels: [`File`], description: `The record format used when another program passes unformatted data to yours` },
+  PRINT: { levels: [`File`, `Record`], description: `Lets the user print the current display with the Print key` },
+  PROTECT: { levels: [`Record`], description: `Protects input-capable fields already on the display (used with OVERLAY)` },
+  PSHBTNCHC: { levels: [`Field`], description: `Defines one choice in a push button field` },
+  PSHBTNFLD: { levels: [`Field`], description: `Defines the field as a push button field` },
+  PULLDOWN: { levels: [`Record`], description: `Defines the record as a pull-down menu for a menu bar` },
+  PUTOVR: { levels: [`Record`], description: `Lets OVRATR/OVRDTA override attributes or data of fields already displayed` },
+  PUTRETAIN: { levels: [`Record`, `Field`], description: `Keeps data already on the display when the record is written again (used with OVERLAY)` },
+  RANGE: { levels: [`Field`], description: `Validity-checks input against a low and high value` },
+  REF: { levels: [`File`], description: `The file field descriptions are retrieved from` },
+  REFFLD: { levels: [`Field`], description: `The field this one is defined from, when its name, format, file or library differs` },
+  RETLCKSTS: { levels: [`Record`], description: `Leaves the keyboard locked on the next input operation` },
+  RMVWDW: { levels: [`Record`], description: `Removes every window on the display before this record is written` },
+  ROLLDOWN: { levels: [`File`, `Record`], description: `Handles the Roll Down / Page Up key in your program` },
+  ROLLUP: { levels: [`File`, `Record`], description: `Handles the Roll Up / Page Down key in your program` },
+  RTNCSRLOC: { levels: [`Record`], description: `Returns the cursor's location to your program on input` },
+  RTNDTA: { levels: [`Record`], description: `Returns the same data as the previous input operation, without re-reading the display` },
+  SETOF: { levels: [`Record`], description: `Sets off a response indicator when an input operation to this record completes` },
+  SETOFF: { levels: [`Record`], description: `Sets off a response indicator when an input operation to this record completes` },
+  SFL: { levels: [`Record`], description: `Defines the record as a subfile record format` },
+  SFLCHCCTL: { levels: [`Field`], description: `Controls, through a program field, which choices in a selection list are available` },
+  SFLCLR: { levels: [`Record`], description: `On the subfile-control format: clears every record out of the subfile` },
+  SFLCSRPRG: { levels: [`Field`], description: `Moves the cursor to the same field in the next subfile record rather than the next field` },
+  SFLCSRRRN: { levels: [`Record`], description: `Returns the relative record number the cursor is on within the subfile` },
+  SFLCTL: { levels: [`Record`], description: `Defines the record as the subfile-control format for the named subfile` },
+  SFLDLT: { levels: [`Record`], description: `Lets your program delete the subfile` },
+  SFLDROP: { levels: [`Record`], description: `Assigns a CA/CF key that folds or truncates subfile records too long for one line` },
+  SFLDSP: { levels: [`Record`], description: `On the subfile-control format: displays the subfile records` },
+  SFLDSPCTL: { levels: [`Record`], description: `On the subfile-control format: displays the control record itself` },
+  SFLEND: { levels: [`Record`], description: `Marks the end of the subfile with "+", "More..."/"Bottom" or a scroll bar` },
+  SFLENTER: { levels: [`Record`], description: `Makes the Enter key act as the Page Up key for this subfile` },
+  SFLFOLD: { levels: [`Record`], description: `Assigns a CA/CF key that truncates or folds subfile records too long for one line` },
+  SFLINZ: { levels: [`Record`], description: `Initialises every record in the subfile on output to the control format` },
+  SFLLIN: { levels: [`Record`], description: `Displays the subfile horizontally, with the given gap between columns` },
+  SFLMLTCHC: { levels: [`Record`], description: `Defines the subfile as a multiple-choice selection list` },
+  SFLMODE: { levels: [`Record`], description: `Returns whether the subfile was folded or truncated on input` },
+  SFLMSG: { levels: [`Record`], description: `On the subfile-control format: message text to display on the message line` },
+  SFLMSGID: { levels: [`Record`], description: `On the subfile-control format: the message ID to display on the message line` },
+  SFLMSGKEY: { levels: [`Field`], description: `On the first field of a message subfile record: the message reference key` },
+  SFLMSGRCD: { levels: [`Record`], description: `Makes the subfile a message subfile, displayed from a program message queue` },
+  SFLNXTCHG: { levels: [`Record`], description: `Makes an already-read subfile record be returned again until the user corrects it` },
+  SFLPAG: { levels: [`Record`], description: `How many subfile records are displayed at once (one page)` },
+  SFLPGMQ: { levels: [`Field`], description: `On the last field of a message subfile record: the program message queue to read` },
+  SFLRCDNBR: { levels: [`Field`], description: `Displays the subfile page containing the relative record number in this field` },
+  SFLRNA: { levels: [`Record`], description: `Initialises the subfile with no active records (used with SFLINZ)` },
+  SFLROLVAL: { levels: [`Field`], description: `Lets the user type how many lines to roll in this subfile-control field` },
+  SFLRTNSEL: { levels: [`Record`], description: `Controls how selection-list choices come back on a GET-NEXT-CHANGED` },
+  SFLSCROLL: { levels: [`Field`], description: `Returns the relative record number at the top of the subfile` },
+  SFLSIZ: { levels: [`Record`], description: `How many records the subfile holds in total` },
+  SFLSNGCHC: { levels: [`Record`], description: `Defines the subfile as a single-choice selection list` },
+  SLNO: { levels: [`Record`], description: `The starting line number the record is written at, fixed or set by the program` },
+  SNGCHCFLD: { levels: [`Field`], description: `Defines the field as a single-choice selection field` },
+  SYSNAME: { levels: [`Field`], description: `Displays the system name as an 8-character constant, output-only field` },
+  TEXT: { levels: [`Record`, `Field`], description: `A comment describing the record or field - documentation only` },
+  TIME: { levels: [`Field`], description: `Displays the current time as a constant, output-only field` },
+  TIMFMT: { levels: [`Field`], description: `The format of a time (T) field` },
+  TIMSEP: { levels: [`Field`], description: `The separator character used in a time (T) field` },
+  UNLOCK: { levels: [`Record`], description: `Unlocks the keyboard immediately after an input operation is issued` },
+  USER: { levels: [`Field`], description: `Displays the job's user profile as a 10-character constant, output-only field` },
+  USRDFN: { levels: [`Record`], description: `The record's data is a user-defined data stream, passed to the device as-is` },
+  USRDSPMGT: { levels: [`File`], description: `Holds written data on the display until it's overwritten or CLRL clears it (System/36 style)` },
+  USRRSTDSP: { levels: [`Record`], description: `Leaves the application to manage the display for this window record` },
+  VALNUM: { levels: [`File`, `Record`, `Field`], description: `Tightens error checking on numeric-only fields` },
+  VALUES: { levels: [`Field`], description: `Validity-checks input against a list of allowed values` },
+  VLDCMDKEY: { levels: [`File`, `Record`], description: `Sets on a response indicator when any valid command key other than Enter is pressed` },
+  WDWBORDER: { levels: [`File`, `Record`], description: `Colour, display attributes and characters forming a window's border` },
+  WDWTITLE: { levels: [`Record`], description: `Text, colour and attributes of a title embedded in a window's top or bottom border` },
+  WINDOW: { levels: [`Record`], description: `Displays the record as a window: its size and position, or the window record it shares` },
+  WRDWRAP: { levels: [`File`, `Record`, `Field`], description: `Wraps a field's text onto the following display lines instead of truncating it` },
+};
+
+/**
+ * The same, for printer files - a separate table because the two file types
+ * barely overlap: a printer file has no DSPATR, COLOR means something else,
+ * and half of what it does have (SPACEB, FONT, DRAWER) means nothing to a
+ * display. Transcribed from IBM's DDS for printer files.
+ */
+const PRINTER_KEYWORD_HELP = {
+  AFPRSC: { levels: [`Record`], description: `Prints an AFP (or non-AFP) resource held in the integrated file system` },
+  ALIAS: { levels: [`Field`], description: `Gives the field an alternative name for the compiler to bring into the program` },
+  BARCODE: { levels: [`Field`], description: `Prints the field as a bar code of the given type` },
+  BLKFOLD: { levels: [`Field`], description: `Folds a long field onto the next print line at a blank rather than mid-word` },
+  BOX: { levels: [`Record`], description: `Prints a rectangle at the given corners` },
+  CCSID: { levels: [`File`, `Record`, `Field`], description: `Makes a G-type field carry UTF-16 data instead of DBCS-graphic data` },
+  CDEFNT: { levels: [`Record`, `Field`], description: `The coded font used to print the record's or field's text` },
+  CHRID: { levels: [`Field`], description: `Prints the field with a character set and code page other than the device default` },
+  CHRSIZ: { levels: [`Record`, `Field`], description: `Expands the printed width and height of a record or field` },
+  COLOR: { levels: [`Field`], description: `The colour the field is printed in` },
+  CPI: { levels: [`Record`, `Field`], description: `Characters per inch - the horizontal print density` },
+  CVTDTA: { levels: [`Field`], description: `Passes the field to the printer as hexadecimal data` },
+  DATE: { levels: [`Field`], description: `Prints the current (or job) date as a constant field` },
+  DATFMT: { levels: [`Field`], description: `The format of a date (L) field` },
+  DATSEP: { levels: [`Field`], description: `The separator character used in a date (L) field` },
+  DFNCHR: { levels: [`File`, `Record`], description: `Defines characters of your own design (5224 and 5225 printers)` },
+  DFNLIN: { levels: [`Record`], description: `Draws a horizontal or vertical line` },
+  DFT: { levels: [`Field`], description: `The constant value of an unnamed field` },
+  DLTEDT: { levels: [`Field`], description: `Drops the EDTCDE or EDTWRD a referenced field brought with it (needs R in position 29)` },
+  DOCIDXTAG: { levels: [`Record`], description: `Creates an indexing tag in the document for AFP and post-processing tools` },
+  DRAWER: { levels: [`Record`], description: `The paper drawer the sheet is fed from` },
+  DTASTMCMD: { levels: [`Record`, `Field`], description: `Stores a data stream command or other information in the spooled file` },
+  DUPLEX: { levels: [`Record`], description: `Prints on one side or both sides of the paper` },
+  EDTCDE: { levels: [`Field`], description: `Edits an output-capable numeric field with one of DDS's standard edit codes` },
+  EDTWRD: { levels: [`Field`], description: `Edits a numeric field with an edit word, for formatting EDTCDE can't produce` },
+  ENDPAGE: { levels: [`Record`], description: `Ejects the page after this record is printed` },
+  ENDPAGGRP: { levels: [`Record`], description: `Ends the page group started by STRPAGGRP` },
+  FLTFIXDEC: { levels: [`Field`], description: `Prints a floating-point field in fixed-decimal notation` },
+  FLTPCN: { levels: [`Field`], description: `The precision - single or double - of a floating-point field` },
+  FNTCHRSET: { levels: [`File`, `Record`, `Field`], description: `The font character set and code page used to print the text` },
+  FONT: { levels: [`Record`, `Field`], description: `The font ID used to print the record's or field's text` },
+  FONTNAME: { levels: [`File`, `Record`, `Field`], description: `The TrueType font used to print the record's or field's text` },
+  FORCE: { levels: [`Record`], description: `Feeds a new sheet before this record is printed` },
+  GDF: { levels: [`Record`], description: `Prints a graphic data file` },
+  HIGHLIGHT: { levels: [`Record`, `Field`], description: `Prints the record or field in bold` },
+  IGCALTTYP: { levels: [`Field`], description: `Turns alphanumeric fields into DBCS (type O) fields` },
+  IGCANKCNV: { levels: [`Field`], description: `Converts alphanumeric characters to their DBCS equivalents (Japanese only)` },
+  IGCCDEFNT: { levels: [`Record`, `Field`], description: `The DBCS coded font used to print the text` },
+  IGCCHRRTT: { levels: [`Record`, `Field`], description: `Rotates each DBCS character 90 degrees anticlockwise before printing` },
+  INDARA: { levels: [`File`], description: `Moves option indicators out of the record buffer into a separate 99-byte area` },
+  INDTXT: { levels: [`File`, `Record`, `Field`], description: `Documents what an indicator is for - comment only, no run-time effect` },
+  INVDTAMAP: { levels: [`Record`], description: `The data map defining the layout of a formatted page` },
+  INVMMAP: { levels: [`Record`], description: `Calls a new medium map` },
+  LINE: { levels: [`Record`], description: `Prints a horizontal or vertical line` },
+  LPI: { levels: [`Record`], description: `Lines per inch - the vertical print density` },
+  MSGCON: { levels: [`Field`], description: `Takes a constant field's text from a message description instead of the source` },
+  OUTBIN: { levels: [`Record`], description: `The output bin the sheet is delivered to` },
+  OVERLAY: { levels: [`Record`], description: `Prints an overlay with the record` },
+  PAGNBR: { levels: [`Field`], description: `Prints the page number as an unnamed 4-digit zoned field` },
+  PAGRTT: { levels: [`Record`], description: `Rotates the text relative to how the page is loaded into the printer` },
+  POSITION: { levels: [`Field`], description: `Positions a named field on the page in inches, centimetres or rows and columns` },
+  PRTQLTY: { levels: [`Record`, `Field`], description: `Varies the print quality within the file` },
+  REF: { levels: [`File`], description: `The file field descriptions are retrieved from` },
+  REFFLD: { levels: [`Field`], description: `The field this one is defined from, when its name, format, file or library differs` },
+  RELPOS: { levels: [`File`], description: `Positions +n fields relative to the end of the previous field rather than the line` },
+  SKIPA: { levels: [`File`, `Record`, `Field`], description: `Skips to the given line number after printing` },
+  SKIPB: { levels: [`File`, `Record`, `Field`], description: `Skips to the given line number before printing` },
+  SPACEA: { levels: [`Record`, `Field`], description: `Spaces the given number of lines after printing` },
+  SPACEB: { levels: [`Record`, `Field`], description: `Spaces the given number of lines before printing` },
+  STAPLE: { levels: [`Record`], description: `Staples the spooled output` },
+  STRPAGGRP: { levels: [`Record`], description: `Starts a logical group of pages, ended by ENDPAGGRP` },
+  TEXT: { levels: [`Record`, `Field`], description: `A comment describing the record or field - documentation only` },
+  TIME: { levels: [`Field`], description: `Prints the current time as a 6-byte constant field` },
+  TIMFMT: { levels: [`Field`], description: `The format of a time (T) field` },
+  TIMSEP: { levels: [`Field`], description: `The separator character used in a time (T) field` },
+  TRNSPY: { levels: [`Field`], description: `Stops redefined code points being read as SCS printer control commands` },
+  TXTRTT: { levels: [`Field`], description: `Rotates the text in the field` },
+  UNDERLINE: { levels: [`Field`], description: `Underlines the field when it's printed` },
+  UNISCRIPT: { levels: [`Field`], description: `Controls selection of text marked for complex script processing` },
+  ZFOLD: { levels: [`Record`], description: `Z-folds the current sheet` },
+};
+
+/**
+ * The help entry for a keyword in whichever file type is open, or undefined
+ * for one we have nothing tabled for - which is the normal case for a keyword
+ * typed into the (creatable) name combobox, and for a display keyword picked
+ * while a printer file is open. Callers show no hint rather than guessing.
+ * @param {string} name
+ */
+function keywordHelp(name) {
+  const keywordName = (name || ``).toUpperCase();
+  const table = activeDocumentType === `dds.prtf` ? PRINTER_KEYWORD_HELP : KEYWORD_HELP;
+  // CA05 and CF17 differ from CA01 only in which key they are, so all 48 share
+  // the two `CA`/`CF` entries rather than being tabled one by one.
+  const key = isCommandKeyKeyword(keywordName) ? keywordName.slice(0, 2) : keywordName;
+
+  return table[key];
+}
+
+/**
+ * "File or record level", "File, record or field level" - the levels a
+ * keyword is legal at, written out for the hint line.
+ * @param {string[]} levels
+ */
+function keywordLevelText(levels) {
+  const named = levels.map((level, index) => index === 0 ? level : level.toLowerCase());
+  const last = named[named.length - 1];
+  const leading = named.slice(0, -1);
+
+  return `${leading.length > 0 ? `${leading.join(`, `)} or ${last}` : last} level`;
+}
+
+/**
+ * The one-line hint shown under the keyword name - where the keyword is legal
+ * and what it does - or an empty string for a keyword we have nothing for.
+ * @param {string} name
+ */
+function keywordHelpText(name) {
+  const help = keywordHelp(name);
+
+  // A full stop between the two halves, not a dash - plenty of the
+  // descriptions carry a dash of their own.
+  return help ? `${keywordLevelText(help.levels)}. ${help.description}.` : ``;
+}
+
+/**
+ * The dropdown options for a keyword's value, or undefined for a keyword
+ * we have no value set for (which keeps the plain text box). The option
+ * label carries the meaning so the list is readable; the value that gets
+ * saved is only ever the bare DDS code.
+ * @param {string} keywordName
+ */
+function keywordValueOptions(keywordName) {
+  const values = KEYWORD_VALUES[keywordName];
+
+  return values
+    ? Object.entries(values).map(([value, meaning]) => ({ label: `${value} - ${meaning}`, value }))
+    : undefined;
+}
+
+/**
+ * Uppercases everything except DDS string literals (single-quoted text,
+ * e.g. a WDWTITLE's title), since keyword values are conventionally
+ * uppercase but literal text is case-sensitive as typed. A doubled quote
+ * (`''`) inside a literal is DDS's escape for a literal quote character,
+ * not the end of the string, so it doesn't toggle back out.
+ * @param {string} text
+ */
+function uppercaseOutsideQuotes(text) {
+  let result = ``;
+  let inQuotes = false;
+
+  for (let i = 0; i < text.length; i++) {
+    const char = text[i];
+
+    if (char === `'`) {
+      if (inQuotes && text[i + 1] === `'`) {
+        result += `''`;
+        i++;
+        continue;
+      }
+      inQuotes = !inQuotes;
+      result += char;
+      continue;
+    }
+
+    result += inQuotes ? char : char.toUpperCase();
+  }
+
+  return result;
+}
+
 /**
  * @param {(keyword: Keyword) => void} onUpdate
- * @param {Keyword} [keyword] 
+ * @param {Keyword} [keyword]
  */
 function editKeyword(onUpdate, keyword) {
   const group = document.createElement(`vscode-form-group`);
@@ -1234,6 +3105,124 @@ function editKeyword(onUpdate, keyword) {
     return input;
   };
 
+  /**
+   * The Value row, always wrapped in a container so the whole row can be
+   * swapped out when the keyword name changes (and so the multi-value form
+   * below can be more than one element). Whatever's inside, the control
+   * carrying the value itself is always the one with id `value`.
+   *
+   * Three shapes, all of which accept anything typed - see the note on
+   * createKeywordNameSelect below - so a keyword or value we don't have
+   * tabled is never blocked:
+   *
+   * - a space-separated list of known codes (DSPATR) - free-text box plus a
+   *   checkbox per code;
+   * - a single known code (COLOR, EDTCDE, ...) - creatable combobox;
+   * - anything else - the plain free-text box.
+   */
+  const createValueRow = (keywordName, value) => {
+    const row = document.createElement(`div`);
+    const options = keywordValueOptions(keywordName);
+
+    if (!options) {
+      row.appendChild(createInputField(`value`, value));
+      return row;
+    }
+
+    if (MULTI_VALUE_KEYWORDS.has(keywordName)) {
+      // The text box stays the value's one source of truth and stays fully
+      // editable - the checkboxes just toggle codes in and out of it. That
+      // keeps a hand-written DSPATR(HI ZZ) editable as typed (ZZ isn't a
+      // code we know, and survives untouched) instead of needing the two
+      // controls reconciled at confirm time.
+      const input = createInputField(`value`, value);
+      row.appendChild(input);
+
+      /** @type {{code: string, checkbox: Element}[]} */
+      const checkboxes = [];
+
+      const syncCheckboxes = () => {
+        const codes = valueTokens(input.value).map(token => token.toUpperCase());
+
+        checkboxes.forEach(({ code, checkbox }) => {
+          if (codes.includes(code)) {
+            checkbox.setAttribute(`checked`, `true`);
+          } else {
+            checkbox.removeAttribute(`checked`);
+          }
+        });
+      };
+
+      options.forEach(option => {
+        const checkbox = document.createElement(`vscode-checkbox`);
+        checkbox.setAttribute(`label`, option.label);
+        checkbox.style.display = `block`;
+        checkbox.style.marginTop = `0.25em`;
+
+        checkbox.addEventListener(`change`, () => {
+          // Rebuilt from what's actually in the box, so codes we don't know
+          // about keep their place in the value instead of being dropped.
+          const remaining = valueTokens(input.value).filter(token => token.toUpperCase() !== option.value);
+          const next = (checkbox.checked ? [...remaining, option.value] : remaining).join(` `);
+
+          input.value = next;
+          input.setAttribute(`value`, next);
+          syncCheckboxes();
+        });
+
+        checkboxes.push({ code: option.value, checkbox });
+        row.appendChild(checkbox);
+      });
+
+      // Typing in the box drives the checkboxes, not just the other way
+      // round. vscode-textfield emits its own vsc-input alongside the native
+      // input event, so listen for both rather than betting on which one
+      // survives the shadow boundary.
+      [`input`, `vsc-input`, `change`].forEach(eventName => input.addEventListener(eventName, syncCheckboxes));
+      syncCheckboxes();
+
+      return row;
+    }
+
+    const select = document.createElement(`vscode-single-select`);
+    select.setAttribute(`id`, `value`);
+    select.combobox = true;
+    select.creatable = true;
+    select.filter = `contains`;
+
+    // Same .value/.options gotcha as the keyword name select: an existing
+    // value we don't have in the table has to be added as an option, or
+    // opening the editor on it would silently blank it out.
+    const known = options.find(option => option.value === value);
+    select.options = value && !known ? [{ label: value, value }, ...options] : options;
+    if (value) {
+      select.value = value;
+    }
+
+    row.appendChild(select);
+    return row;
+  };
+
+  const createKeywordNameSelect = (id, value) => {
+    const select = document.createElement(`vscode-single-select`);
+    select.setAttribute(`id`, id);
+    select.combobox = true;
+    select.creatable = true;
+    select.filter = `startsWith`;
+
+    // Setting .value only selects something already present in .options - it
+    // doesn't add it. If we're editing a keyword this list doesn't happen to
+    // cover, make sure its name is still there so it shows up instead of
+    // silently going blank.
+    const names = value && !DDS_KEYWORDS.includes(value) ? [value, ...DDS_KEYWORDS] : DDS_KEYWORDS;
+    select.options = names.map(name => ({ label: name, value: name }));
+    if (value) {
+      select.value = value;
+    }
+
+    return select;
+  };
+
   const createIndicatorSelect = (id, defaultValue) => {
     const select = document.createElement(`vscode-single-select`);
     select.setAttribute(`id`, id);
@@ -1244,17 +3233,12 @@ function editKeyword(onUpdate, keyword) {
       options.push(String(i));
     }
 
-    options.forEach(option => {
-      const optionElement = document.createElement(`vscode-option`);
-      optionElement.setAttribute(`value`, option);
-      optionElement.innerText = option;
-
-      if (option === defaultValue) {
-        optionElement.setAttribute(`selected`, `true`);
-      }
-
-      select.appendChild(optionElement);
-    });
+    select.options = options.map(option => ({
+      label: option,
+      value: option,
+    }));
+    // defaultValue is the numeric indicator (or undefined); options are strings.
+    select.value = defaultValue !== undefined ? String(defaultValue) : `None`;
 
     return select;
   };
@@ -1269,26 +3253,103 @@ function editKeyword(onUpdate, keyword) {
     return checkbox;
   };
 
+  const keywordName = keyword ? keyword.name : ``;
+
+  const nameSelect = createKeywordNameSelect(`keyword`, keywordName);
   group.appendChild(createLabel(`Keyword`, `keyword`));
-  group.appendChild(createInputField(`keyword`, keyword ? keyword.name : ``));
+  group.appendChild(nameSelect);
 
+  // What the selected keyword does and where it's legal, in one line under
+  // the name. Help only - a keyword we have nothing tabled for (or a display
+  // keyword picked while a printer file is open) hides the line rather than
+  // saying anything, and nothing here stops you saving what you've typed.
+  const helpLine = document.createElement(`div`);
+  helpLine.setAttribute(`id`, `keywordHelp`);
+  helpLine.style.fontSize = `0.9em`;
+  helpLine.style.opacity = `0.75`;
+  helpLine.style.marginTop = `0.35em`;
+
+  const showHelpFor = (name) => {
+    const text = keywordHelpText(name);
+    helpLine.innerText = text;
+    helpLine.style.display = text ? `block` : `none`;
+  };
+
+  showHelpFor(keywordName);
+  group.appendChild(helpLine);
+
+  let valueRow = createValueRow(keywordName, keyword ? (keyword.value || ``) : ``);
   group.appendChild(createLabel(`Value`, `value`));
-  group.appendChild(createInputField(`value`, keyword ? (keyword.value || ``) : ``));
+  group.appendChild(valueRow);
 
-  group.appendChild(createLabel(`Indicator 1`, `ind1`));
-  group.appendChild(createIndicatorSelect(`ind1`, keyword ? keyword.conditions[0]?.indicator : undefined));
+  // Which control the Value row needs depends on which keyword is selected,
+  // so picking a different name has to rebuild it in place - and the help
+  // line above it describes whatever is selected now.
+  nameSelect.addEventListener(`change`, () => {
+    const newName = (nameSelect.value || ``).toUpperCase();
+    const currentValue = valueRow.querySelector(`#value`).value || ``;
+    const options = keywordValueOptions(newName);
 
-  group.appendChild(createCheckbox(`neg1`, `Negate`, keyword ? keyword.conditions[0]?.negate : undefined));
+    showHelpFor(newName);
 
-  group.appendChild(createLabel(`Indicator 2`, `ind2`));
-  group.appendChild(createIndicatorSelect(`ind2`, keyword ? keyword.conditions[1]?.indicator : undefined));
+    // Carry the value over to the new control only when it could still be
+    // right: anything goes in a free-text box, and every code in a
+    // multi-value list has to be one the new keyword knows, but offering a
+    // dropdown of COLOR's values while it still holds a leftover EDTCDE code
+    // would be claiming a value we know is wrong.
+    const codes = MULTI_VALUE_KEYWORDS.has(newName) ? valueTokens(currentValue) : [currentValue];
+    const stillValid = !options || codes.every(code => options.some(option => option.value === code.toUpperCase()));
 
-  group.appendChild(createCheckbox(`neg2`, `Negate`, keyword ? keyword.conditions[1]?.negate : undefined));
+    const replacement = createValueRow(newName, stillValid ? currentValue : ``);
+    group.replaceChild(replacement, valueRow);
+    valueRow = replacement;
+  });
 
-  group.appendChild(createLabel(`Indicator 3`, `ind3`));
-  group.appendChild(createIndicatorSelect(`ind3`, keyword ? keyword.conditions[2]?.indicator : undefined));
+  // Real DDS conditions a field/keyword with up to 3 OR'd groups (each an
+  // AND of up to 3 indicators, via continuation lines) - 3x3 covers the
+  // vast majority of real DDS (parsing/rendering still supports more than
+  // this if a file happens to have it, this cap is purely about keeping
+  // the editing form a reasonable size). That's still ~30 stacked form
+  // elements, easily pushing Confirm off-screen - collapsed by default
+  // (auto-expanded only if the keyword already has a condition set) keeps
+  // Keyword/Value/Confirm compact and always visible without scrolling.
+  const GROUP_COUNT = 3;
+  const INDICATORS_PER_GROUP = 3;
+  const existingGroups = keyword ? keyword.conditions : [];
+  const hasExistingConditions = existingGroups.some(g => g.indicators && g.indicators.length > 0);
 
-  group.appendChild(createCheckbox(`neg3`, `Negate`, keyword ? keyword.conditions[2]?.negate : undefined));
+  const conditionsSection = document.createElement(`vscode-collapsible`);
+  conditionsSection.setAttribute(`title`, `Conditions`);
+  conditionsSection.style.display = `block`;
+  conditionsSection.style.marginTop = `1em`;
+  if (hasExistingConditions) {
+    conditionsSection.setAttribute(`open`, ``);
+  }
+
+  for (let g = 0; g < GROUP_COUNT; g++) {
+    if (g > 0) {
+      const orLabel = document.createElement(`vscode-label`);
+      orLabel.innerText = `OR`;
+      orLabel.style.marginTop = `1em`;
+      orLabel.style.fontWeight = `600`;
+      orLabel.style.opacity = `0.7`;
+      conditionsSection.appendChild(orLabel);
+    }
+
+    const existingIndicators = existingGroups[g]?.indicators || [];
+
+    for (let s = 0; s < INDICATORS_PER_GROUP; s++) {
+      const indId = `ind-${g}-${s}`;
+      const negId = `neg-${g}-${s}`;
+      const existing = existingIndicators[s];
+
+      conditionsSection.appendChild(createLabel(`Indicator ${g * INDICATORS_PER_GROUP + s + 1}`, indId));
+      conditionsSection.appendChild(createIndicatorSelect(indId, existing?.indicator));
+      conditionsSection.appendChild(createCheckbox(negId, `Negate`, existing?.negate));
+    }
+  }
+
+  group.appendChild(conditionsSection);
 
   const button = document.createElement(`vscode-button`);
   button.setAttribute(`icon`, `check`);
@@ -1296,44 +3357,48 @@ function editKeyword(onUpdate, keyword) {
   button.style.display = `block`;
   button.innerText = `Confirm`;
   button.onclick = () => {
-    const keywordName = group.querySelector(`#keyword`).value;
-    const keywordValue = group.querySelector(`#value`).value;
+    // DDS keyword names and values are conventionally uppercase - parsed
+    // keywords already come back uppercased (see parseKeywords), so typing
+    // a new/edited one in lowercase here would otherwise be the only way to
+    // end up with a lowercase keyword in the source.
+    const keywordName = (group.querySelector(`#keyword`).value || ``).toUpperCase();
+    // Keyword names never contain quoted literals, but a value might
+    // (e.g. WDWTITLE's title) - leave that text's case alone.
+    const keywordValue = uppercaseOutsideQuotes(group.querySelector(`#value`).value || ``);
 
-    const ind1 = group.querySelector(`#ind1`).value;
-    const neg1 = group.querySelector(`#neg1`).checked;
+    /** @type {import('./dspf.d.ts').ConditionGroup[]} */
+    const conditions = [];
 
-    const ind2 = group.querySelector(`#ind2`).value;
-    const neg2 = group.querySelector(`#neg2`).checked;
+    for (let g = 0; g < GROUP_COUNT; g++) {
+      /** @type {import('./dspf.d.ts').Conditional[]} */
+      const indicators = [];
 
-    const ind3 = group.querySelector(`#ind3`).value;
-    const neg3 = group.querySelector(`#neg3`).checked;
+      for (let s = 0; s < INDICATORS_PER_GROUP; s++) {
+        const ind = group.querySelector(`#ind-${g}-${s}`).value;
+        const neg = group.querySelector(`#neg-${g}-${s}`).checked;
+
+        if (ind !== `None`) {
+          // The select's options are strings; Conditional.indicator is a
+          // number everywhere else (the parser produces numbers, and
+          // activeIndicators is a Set of them), so convert here rather than
+          // leaking a string into the model until the next round-trip
+          // through the document reparses it back into a number.
+          indicators.push({ indicator: Number(ind), negate: neg });
+        }
+      }
+
+      // Skip an empty group entirely - e.g. leaving group 2 blank while
+      // using groups 1 and 3 shouldn't emit a meaningless empty OR'd group.
+      if (indicators.length > 0) {
+        conditions.push({ indicators });
+      }
+    }
 
     const newKeyword = {
       name: keywordName,
       value: keywordValue ? keywordValue : undefined,
-      conditions: []
+      conditions
     };
-
-    if (ind1 !== `None`) {
-      newKeyword.conditions.push({
-        indicator: ind1,
-        negate: neg1
-      });
-    }
-
-    if (ind2 !== `None`) {
-      newKeyword.conditions.push({
-        indicator: ind2,
-        negate: neg2
-      });
-    }
-
-    if (ind3 !== `None`) {
-      newKeyword.conditions.push({
-        indicator: ind3,
-        negate: neg3
-      });
-    }
 
     onUpdate(newKeyword);
   };

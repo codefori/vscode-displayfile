@@ -1,35 +1,92 @@
 {
-  "name": "vscode-ibmi-renderer",
-  "displayName": "vscode-ibmi-renderer",
-  "description": "IBM i Renderer 2",
-  "version": "0.0.1",
+  "name": "DSPF-Editor",
+  "displayName": "DSPF Editor",
+  "description": "Visual drag-and-drop designer for IBM i DDS display files (.dspf) and printer files (.prtf)",
+  "publisher": "DanielLong",
+  "version": "0.5.0",
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/danlong005/DSPF-Editor.git"
+  },
+  "bugs": {
+    "url": "https://github.com/danlong005/DSPF-Editor/issues"
+  },
+  "homepage": "https://github.com/danlong005/DSPF-Editor#readme",
+  "icon": "images/icon.png",
   "engines": {
     "vscode": "^1.97.0"
   },
   "categories": [
+    "Visualization",
     "Other"
   ],
+  "keywords": [
+    "IBM i",
+    "AS400",
+    "iSeries",
+    "DDS",
+    "DSPF",
+    "PRTF",
+    "RPG",
+    "5250",
+    "display file",
+    "printer file"
+  ],
   "activationEvents": [
-    "onLanguage:dds.dspf"
+    "onLanguage:dds.dspf",
+    "onLanguage:dds.prtf"
   ],
   "main": "./dist/extension.js",
   "contributes": {
     "commands": [
       {
-        "command": "vscode-ibmi-renderer.launchRenderer",
-        "title": "Launch Renderer",
-        "icon": "$(search)"
+        "command": "dspf-editor.launchRenderer",
+        "title": "Open Design View",
+        "icon": "$(edit)"
+      },
+      {
+        "command": "dspf-editor.launchPreview",
+        "title": "Open Preview View",
+        "icon": "$(eye)"
       }
     ],
     "menus": {
       "editor/title": [
         {
-          "command": "vscode-ibmi-renderer.launchRenderer",
-          "when": "editorLangId == dds.dspf",
+          "command": "dspf-editor.launchRenderer",
+          "when": "resourceExtname == .dspf || resourceExtname == .DSPF || resourceExtname == .prtf || resourceExtname == .PRTF",
+          "group": "navigation"
+        },
+        {
+          "command": "dspf-editor.launchPreview",
+          "when": "resourceExtname == .dspf || resourceExtname == .DSPF || resourceExtname == .prtf || resourceExtname == .PRTF",
           "group": "navigation"
         }
       ]
-    }
+    },
+    "customEditors": [
+      {
+        "viewType": "dspf-editor.dspfEditor",
+        "displayName": "Design",
+        "selector": [
+          {
+            "filenamePattern": "*.{dspf,DSPF,prtf,PRTF}"
+          }
+        ],
+        "priority": "default"
+      },
+      {
+        "viewType": "dspf-editor.dspfPreview",
+        "displayName": "Preview",
+        "selector": [
+          {
+            "filenamePattern": "*.{dspf,DSPF,prtf,PRTF}"
+          }
+        ],
+        "priority": "option"
+      }
+    ]
   },
   "scripts": {
     "vscode:prepublish": "npm run package",
@@ -39,7 +96,7 @@
     "build:esbuild": "node esbuild.js",
     "build:tsc": "tsc --noEmit --project tsconfig.json",
     "getTsTypesForFile": "tsc --declaration --emitDeclarationOnly --outDir types && cp types/ui/dspf.d.ts webui/dspf.d.ts",
-    "package": "npm run check-types && npm run lint && node esbuild.js --production",
+    "package": "npm run build:frontend && npm run check-types && npm run lint && node esbuild.js --production",
     "check-types": "tsc --noEmit",
     "lint": "eslint src",
     "test": "vitest"

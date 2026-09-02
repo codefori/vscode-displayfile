@@ -1,0 +1,110 @@
+     A                                      DSPSIZ(24 80 *DS3 27 132 *DS4)
+     A          R HEADER
+     A                                      CA01
+     A                                  1 35'Ugly Duckling'
+     A                                      COLOR(YLW)
+     A            SYSFLD         8A  O  1  2
+     A                                      SYSNAME
+     A            DATEFLD        8L 0O  1 68
+     A                                      DATFMT(*ISO)
+     A                                      DATSEP(-)
+     A            TIMEFLD        8T 0O  2 68
+     A                                      TIMFMT(*HMS)
+     A                                      TIMSEP(:)
+     A            PAGEFLD        4A  O  2  2
+     A                                      PAGNBR
+     A            USERFLD       10A  O  3  2
+     A                                      USER
+     A            F1NWFLD       11D 0I  5  2
+     A                                      COLOR(YLW)
+     A            REFFLD1        0R 0O  4 18
+     A                                      REFFLD(CUSTNO)
+     A                                      DSPATR(UL)
+     A            NEWFLD1       10A  I  4 32
+
+
+     A          R CUSTOMER
+     A            RECKEY         4A  H  1  1
+     A                                  4  2'Customer #:'
+     A            CUSTNO         8D 2B  4 15
+     A                                      COLOR(BLU)
+     A                                      DSPATR(UL)
+     A                                  5  2'Name:'
+     A            CUSTNAME      25A  I  5 15
+     A                                      COLOR(BLU)
+     A                                  7  2'Balance:'
+     A            BALANCE        9D 2O  7 15
+     A                                      COLOR(BLU)
+     A                                  8  2'Sts:'
+     A            STATUS         1A  B  8 15
+     A                                      COLOR(YLW)
+     A  80                             10  2'Promo Code:'
+     A  80        PROMO         10A  I 10 15
+     A                                      COLOR(GRN)
+     A                                 23  2'F3=Exit  F12=Cancel'
+     A            NEWFLD1       10A  I  9 15
+     A                                      COLOR(WHT)
+     A                                  9  2'JUNK'
+     A          R SFLREC
+     A            ITEM          15A  O  3  2
+     A            QTY            3D 0I  3 20
+     A            PRICE          7D 2O  3 34
+     A          R SFLCTLFMT
+     A                                      SFLCTL(SFLREC)
+     A                                      SFLSIZ(9999)
+     A                                      SFLPAG(0010)
+     A                                      SFLDSP
+     A                                      SFLDSPCTL
+     A                                      SFLCLR
+     A                                  2  2'Item'
+     A                                      DSPATR(UL)
+     A                                  2 20'Qty'
+     A                                      DSPATR(UL)
+     A                                  2 34'Price'
+     A                                      DSPATR(UL)
+     A          R CONFIRMWIN
+     A                                      WINDOW(3 20 8 40)
+     A                                      WDWBORDER(*COLOR BLU)
+     A                                      WDWTITLE(*TEXT 'Confirm Delete' *COLOR WHT *TOP *CENTER)
+     A                                  3  3'Are you sure you want to'
+     A                                  4  3'delete this record?'
+     A            CONFIRM        1A  B  6  3
+     A                                      COLOR(YLW)
+     A                                  6  5'(Y/N)'
+     A          R INFOWIN
+     A                                      WINDOW(4 10 6 50)
+     A                                      WDWBORDER(*COLOR GRN)
+     A                                      WDWTITLE(*TEXT 'Info' *COLOR WHT *TOP *CENTER)
+     A                                  2  3'Record saved successfully.'
+     A                                  4  3'Press Enter to continue'
+     A          R FOOTER
+     A                                 23  3'F3=Exit'
+     A                                      COLOR(BLU)
+
+     A          R JUNK
+
+     A                                  5 11'Last Name:'
+     A            jklname       10A  I  5 22
+     A            jkfname       10A  I  7 22
+
+     A                                  7 10'First Name:'
+
+     A                                  9 12'Job Name:'
+     A            jkjobnm       30A  I  9 22
+     A  95                                  COLOR(WHT)
+     A            NEWFLD1       10A  I 11 22
+     A  98                                  COLOR(BLU)
+     A            NEWFLD2       10A  I 13 22
+     A                                      COLOR(YLW)
+     A                                 11 13'Constant'
+     A            NEWFLD03      10A  I 15 22
+     A  99                                  COLOR(RED)
+     A                                 13 13'Constant'
+     A          R ALERT
+     A                                      WINDOW(2 8 11 61)
+     A                                      WDWBORDER(*COLOR RED)
+     A                                      WDWTITLE(*TEXT 'Alert Window' *COLOR WHT *TOP *CENTER)
+     A                                  3  4'This is an alert message.'
+     A            ALERTFLD       1A  B  5  4
+     A                                      COLOR(YLW)
+     A                                  5  7'(Press Enter to continue)'
