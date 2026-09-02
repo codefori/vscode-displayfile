@@ -63,7 +63,11 @@ If the file's `DSPSIZ`/`PAGSIZ` defines more than one size (e.g. `*DS3` and
     — whose value is a list of attributes — offers a checkbox per
     attribute. Either way the value stays typeable, as does the keyword
     name itself, so nothing stops you entering a keyword or value it
-    doesn't know about.
+    doesn't know about. Selecting a keyword also shows a line explaining
+    what it does and which level (file, record or field) it's legal at,
+    taken from IBM's DDS references and specific to the kind of file
+    you're editing — `COLOR` on a printer file is the colour a field is
+    *printed* in, and a display-only keyword gets no line there at all.
 
 ### Adding new fields
 

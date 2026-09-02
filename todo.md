@@ -29,11 +29,14 @@ now spreads in all 48 `COMMAND_KEY_KEYWORDS`.
 
 What's still true: there is no *structural* keyword knowledge in the editor -
 `DSPATR(ZZ)` and a one-arg `WINDOW(1)` still save silently, and nothing knows
-a keyword's arity or which level it's legal at. The knowledge that does exist
-is still scattered:
+a keyword's arity. Level and description are now tabled (see Tier 2 below) but
+only as help text - nothing checks a keyword against the level it's coded at.
+The knowledge that does exist is still scattered, now across four tables
+rather than two:
 
-- `DDS_KEYWORDS` - a flat `string[]` of names, no arity, level, or
-  description; `KEYWORD_VALUES` sits beside it as a second, separate table.
+- `DDS_KEYWORDS` - a flat `string[]` of names, no arity; `KEYWORD_VALUES`,
+  `KEYWORD_HELP` and `PRINTER_KEYWORD_HELP` sit beside it as separate tables,
+  each keyed by name again.
 - `colours` / `dateFormats` / `timeFormats` (`webui/main.js:49-79`) - value
   maps for the canvas, two of which `KEYWORD_VALUES` now also feeds from.
 - ~10 ad-hoc `keyword.name === 'X'` special cases: `WINDOW`
@@ -68,11 +71,16 @@ multi-value, which is Tier 2's first item.
   `vscode-multi-select` isn't creatable, so it couldn't keep the escape
   hatch). `MULTI_VALUE_KEYWORDS` marks which keywords take a list; nothing
   else needs one yet.
-- **Per-keyword description and level hint in the editor.** One line
-  explaining the selected keyword and where it's legal (file / record /
-  field). Purely additive, no validation. This is *not* the
+- ~~**Per-keyword description and level hint in the editor.**~~ Done:
+  `KEYWORD_HELP` / `PRINTER_KEYWORD_HELP` (`webui/main.js`) table a level list
+  and a one-line description per keyword, transcribed from IBM's *DDS for
+  display files* / *DDS for printer files*; `keywordHelpText` renders the line
+  under the Keyword field and the name select refreshes it. Two tables rather
+  than one because the file types barely overlap - a printer file gets the
+  printer meaning of `COLOR`, and nothing at all for `DSPATR`. Purely
+  additive: an untabled keyword hides the line. (Still *not* the
   hover/IntelliSense-in-the-raw-source idea we ruled out - that was tooling
-  over the DDS text; this is help text in the sidebar form we already render.
+  over the DDS text; this is help text in the sidebar form we already render.)
 - **Structured parameter forms for positional keywords.** `WINDOW` gets four
   number boxes plus `*NOMSGLIN`; `CAxx`/`CFxx` gets indicator + optional
   quoted text; `SFLCTL` gets a dropdown of the subfile record names actually
@@ -95,6 +103,20 @@ multi-value, which is Tier 2's first item.
 - **Soft, non-blocking validation warnings.** Flag an unrecognised value or a
   suspicious arity as a warning only. Never blocks confirm - see the ground
   rule.
+
+## Small, found on the way
+
+- **Names in `DDS_KEYWORDS` that IBM's references don't carry.** Writing the
+  help tables turned up 15 entries in the keyword name list that appear in
+  neither *DDS for display files* nor *DDS for printer files*: `ALIGN`,
+  `CONCAT`, `DATA`, `DFRWRT`, `END`, `FORMFEED`, `HLPPGM`, `OUTPUT`,
+  `OVERFLOW`, `PAGSIZ`, `TRNSPARENCY`, `UDATE`, `UDAY`, `UMONTH`, `UYEAR`.
+  Some look like misspellings of real keywords (`TRNSPARENCY` for `TRNSPY`),
+  some like CRTPRTF parameters or RPG special words that aren't DDS keywords
+  at all - but `PAGSIZ` is one we actively parse and render printer pages
+  from, and `samples/intricate.prtf` codes it, so this needs deciding rather
+  than a blind delete. The help-line test pins the list, so it fails loudly if
+  the name list changes without this being revisited.
 
 ## Explicitly not pursuing
 

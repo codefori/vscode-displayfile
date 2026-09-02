@@ -1898,6 +1898,128 @@ describe(`editKeyword - multi-value keywords (DSPATR)`, () => {
   });
 });
 
+describe(`editKeyword - the keyword help line`, () => {
+  function currentKeywordEditorGroup(sandbox: any): FakeElement {
+    const area = sandbox.document.getElementById(`keywordEditorArea`);
+    return area.children.find((el: FakeElement) => el.tagName === `VSCODE-FORM-GROUP`);
+  }
+
+  function helpLine(formGroup: FakeElement): FakeElement {
+    return formGroup.querySelector(`#keywordHelp`);
+  }
+
+  /** Mirrors picking a different keyword in the (creatable) name combobox. */
+  function pickKeyword(formGroup: FakeElement, name: string) {
+    const select = formGroup.querySelector(`#keyword`);
+    select.value = name;
+    select.trigger(`change`);
+  }
+
+  it(`says where the keyword is legal and what it does`, () => {
+    const sandbox = loadWebui();
+    sandbox.editKeyword(() => {}, { name: `COLOR`, value: `RED`, conditions: [] });
+
+    expect(helpLine(currentKeywordEditorGroup(sandbox)).innerText)
+      .toBe(`Field level. The colour of the field on a colour display.`);
+  });
+
+  it(`writes out every level a keyword is legal at`, () => {
+    const sandbox = loadWebui();
+    sandbox.editKeyword(() => {}, { name: `HELP`, value: ``, conditions: [] });
+
+    expect(helpLine(currentKeywordEditorGroup(sandbox)).innerText).toMatch(/^File or record level\. /);
+
+    const formGroup = currentKeywordEditorGroup(sandbox);
+    pickKeyword(formGroup, `CHGINPDFT`);
+    expect(helpLine(formGroup).innerText).toMatch(/^File, record or field level\. /);
+  });
+
+  it(`follows the keyword name when a different one is picked`, () => {
+    const sandbox = loadWebui();
+    sandbox.editKeyword(() => {}, { name: `COLOR`, value: `RED`, conditions: [] });
+
+    const formGroup = currentKeywordEditorGroup(sandbox);
+    pickKeyword(formGroup, `WINDOW`);
+
+    expect(helpLine(formGroup).innerText).toMatch(/^Record level\. /);
+  });
+
+  it(`hides itself for a keyword we have nothing tabled for`, () => {
+    const sandbox = loadWebui();
+    sandbox.editKeyword(() => {}, { name: `MYOWNKW`, value: `whatever`, conditions: [] });
+
+    const line = helpLine(currentKeywordEditorGroup(sandbox));
+    expect(line.innerText).toBe(``);
+    expect(line.style.display).toBe(`none`);
+
+    // ...and comes back when something we do know is picked.
+    const formGroup = currentKeywordEditorGroup(sandbox);
+    pickKeyword(formGroup, `COLOR`);
+    expect(helpLine(formGroup).style.display).toBe(`block`);
+  });
+
+  it(`covers all 48 command keys from the two CA/CF entries`, () => {
+    const sandbox = loadWebui();
+    sandbox.editKeyword(() => {}, { name: `CA05`, value: `(05 'Refresh')`, conditions: [] });
+
+    const formGroup = currentKeywordEditorGroup(sandbox);
+    expect(helpLine(formGroup).innerText).toContain(`Command attention key`);
+
+    pickKeyword(formGroup, `CF17`);
+    expect(helpLine(formGroup).innerText).toContain(`Command function key`);
+  });
+
+  it(`describes a printer file's keywords, not a display file's`, () => {
+    const sandbox = loadWebui();
+    sandbox.loadDDS({ formats: [] }, `dds.prtf`, false);
+    sandbox.editKeyword(() => {}, { name: `SPACEB`, value: `1`, conditions: [] });
+
+    const formGroup = currentKeywordEditorGroup(sandbox);
+    expect(helpLine(formGroup).innerText).toBe(`Record or field level. Spaces the given number of lines before printing.`);
+
+    // COLOR means something different on paper than on a screen.
+    pickKeyword(formGroup, `COLOR`);
+    expect(helpLine(formGroup).innerText).toBe(`Field level. The colour the field is printed in.`);
+  });
+
+  it(`says nothing about a display-only keyword while a printer file is open`, () => {
+    const sandbox = loadWebui();
+    sandbox.loadDDS({ formats: [] }, `dds.prtf`, false);
+    // DSPATR doesn't exist in printer files - claiming a level for it there
+    // would be worse than the blank line we leave instead.
+    sandbox.editKeyword(() => {}, { name: `DSPATR`, value: `UL`, conditions: [] });
+
+    expect(helpLine(currentKeywordEditorGroup(sandbox)).innerText).toBe(``);
+  });
+
+  it(`still describes display keywords in a display file`, () => {
+    const sandbox = loadWebui();
+    sandbox.loadDDS({ formats: [] }, `dds.dspf`, false);
+    sandbox.editKeyword(() => {}, { name: `DSPATR`, value: `UL`, conditions: [] });
+
+    expect(helpLine(currentKeywordEditorGroup(sandbox)).innerText).toMatch(/^Field level\. Display attributes/);
+  });
+
+  it(`describes every keyword the name list offers, in the file type that offers it`, () => {
+    const sandbox = loadWebui();
+    sandbox.editKeyword(() => {});
+    const names: string[] = currentKeywordEditorGroup(sandbox)
+      .querySelector(`#keyword`).options.map((option: any) => option.value);
+
+    sandbox.loadDDS({ formats: [] }, `dds.dspf`, false);
+    const undescribed = names.filter(name => !sandbox.keywordHelpText(name));
+    sandbox.loadDDS({ formats: [] }, `dds.prtf`, false);
+    const inNeither = undescribed.filter(name => !sandbox.keywordHelpText(name));
+
+    // Everything left is a name IBM's display/printer DDS references don't
+    // carry (System/36-era or misspelt entries in the list - see todo.md).
+    expect(inNeither).toEqual([
+      `ALIGN`, `CONCAT`, `DATA`, `DFRWRT`, `END`, `FORMFEED`, `HLPPGM`, `OUTPUT`,
+      `OVERFLOW`, `PAGSIZ`, `TRNSPARENCY`, `UDATE`, `UDAY`, `UMONTH`, `UYEAR`,
+    ]);
+  });
+});
+
 describe(`the keyword name list - command keys`, () => {
   /** The list is a module-level const, so read it back off the name
    * combobox the editor actually builds from it. */

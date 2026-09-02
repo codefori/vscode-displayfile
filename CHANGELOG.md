@@ -6,6 +6,11 @@ Check [Keep a Changelog](http://keepachangelog.com/) for recommendations on how 
 
 ## [Unreleased]
 
+### Added
+
+- The keyword editor now explains the keyword you've selected: a line under the Keyword field giving the level(s) it's legal at and one sentence on what it does (`Record level. Displays the record as a window: its size and position, or the window record it shares.`). The levels and wording come from IBM's DDS references, and the table covers every keyword in the name list except a handful those references don't carry at all (`PAGSIZ`, `OVERFLOW`, `UDATE`, ...). It's help text, not a gate - a keyword we have nothing tabled for, including anything you type yourself, simply shows no line, and nothing about the value is checked.
+- The help line is per file type: a printer file gets the printer-file meaning of a shared keyword (`COLOR` is the colour a field is *printed* in, `TEXT` is the same comment either way) and says nothing at all about a display-only keyword like `DSPATR`, rather than describing a keyword that doesn't exist on paper.
+
 ## [0.4.1] - 2026-08-29
 
 ### Fixed
